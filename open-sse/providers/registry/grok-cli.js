@@ -65,6 +65,7 @@ export default {
       502: { attempts: 2, delayMs: 1500 },
       503: { attempts: 2, delayMs: 1500 },
     },
+    quirks: { preservePromptCacheKey: true },
   },
   models: [
     {

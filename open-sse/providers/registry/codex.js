@@ -45,6 +45,7 @@ export default {
       accountsCheckUrl: "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
       subscriptionsUrl: "https://chatgpt.com/backend-api/subscriptions",
     },
+    quirks: { preservePromptCacheKey: true },
   },
   models: [
     { id: "gpt-5.6-sol", name: "GPT 5.6 Sol" },
