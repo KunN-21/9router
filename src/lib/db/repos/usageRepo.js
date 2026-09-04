@@ -78,7 +78,7 @@ function addToCounter(target, key, values) {
   if (values.meta) Object.assign(target[key], values.meta);
 }
 
-function aggregateEntryToDay(day, entry) {
+function aggregateEntryToDay(day, entry, keyInfo) {
   const promptTokens = entry.tokens?.prompt_tokens || entry.tokens?.input_tokens || 0;
   const completionTokens = entry.tokens?.completion_tokens || entry.tokens?.output_tokens || 0;
   const cachedTokens = entry.tokens?.cached_tokens || entry.tokens?.cache_read_input_tokens || 0;
@@ -106,9 +106,14 @@ function aggregateEntryToDay(day, entry) {
     addToCounter(day.byAccount, entry.connectionId, { ...vals, meta: { rawModel: entry.model, provider: entry.provider } });
   }
 
-  const apiKeyVal = entry.apiKey && typeof entry.apiKey === "string" ? entry.apiKey : "local-no-key";
-  const akModelKey = `${apiKeyVal}|${entry.model}|${entry.provider || "unknown"}`;
-  addToCounter(day.byApiKey, akModelKey, { ...vals, meta: { rawModel: entry.model, provider: entry.provider, apiKey: entry.apiKey || null } });
+  const rawApiKey = entry.apiKey && typeof entry.apiKey === "string" ? entry.apiKey : null;
+  const identity = apiKeyIdentity(rawApiKey, keyInfo);
+  const akModelKey = `${identity}|${entry.model}|${entry.provider || "unknown"}`;
+  // Display-only metadata; the stored bucket key and apiKey field carry the
+  // stable identity, never the raw key.
+  const apiKeyMasked = keyInfo?.key ? maskApiKey(keyInfo.key) : (rawApiKey ? maskApiKey(rawApiKey) : null);
+  const keyName = keyInfo?.name || (rawApiKey ? rawApiKey.slice(0, 8) + "..." : "Local (No API Key)");
+  addToCounter(day.byApiKey, akModelKey, { ...vals, meta: { rawModel: entry.model, provider: entry.provider, apiKey: identity, apiKeyMasked, keyName } });
 
   const endpoint = entry.endpoint || "Unknown";
   const epKey = `${endpoint}|${entry.model}|${entry.provider || "unknown"}`;
@@ -312,7 +317,16 @@ export async function saveRequestUsage(entry) {
         requests: 0, promptTokens: 0, completionTokens: 0, cost: 0,
         byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {},
       };
-      aggregateEntryToDay(day, entry);
+      // Sync lookup inside the same transaction: no async yield, semantics unchanged.
+      // Resolves the stable identity (key id) so new daily buckets never store the raw key.
+      let writeKeyInfo = null;
+      try {
+        if (entry.apiKey && typeof entry.apiKey === "string") {
+          const r = db.get(`SELECT id, name FROM apiKeys WHERE key = ?`, [entry.apiKey]);
+          if (r) writeKeyInfo = { id: r.id, name: r.name };
+        }
+      } catch {}
+      aggregateEntryToDay(day, entry, writeKeyInfo);
       db.run(`INSERT INTO usageDaily(dateKey, data) VALUES(?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`, [dateKey, stringifyJson(day)]);
 
       // Atomic counter increment in same transaction
@@ -384,7 +398,11 @@ export async function getUsageStats(period = "all") {
   let allApiKeys = [];
   try { allApiKeys = await getApiKeys(); } catch {}
   const apiKeyMap = {};
-  for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
+  const apiKeyIdMap = {};
+  for (const k of allApiKeys) {
+    apiKeyMap[k.key] = { name: k.name, id: k.id, key: k.key, createdAt: k.createdAt };
+    apiKeyIdMap[k.id] = { name: k.name, id: k.id, key: k.key, createdAt: k.createdAt };
+  }
 
   // recentRequests from live history (last 100 entries enough for 20 deduped)
   const recentRows = db.all(`SELECT timestamp, provider, model, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
@@ -522,15 +540,28 @@ export async function getUsageStats(period = "all") {
         const rawModel = ak.rawModel || "";
         const provider = ak.provider || "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
-        const apiKeyVal = ak.apiKey;
-        const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
-        const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
-        const apiKeyMasked = maskApiKey(apiKeyVal);
-        const apiKeyKey = apiKeyMasked || "local-no-key";
-        // The stored daily bucket is named by the raw key (aggregateEntryToDay
-        // writes `${apiKey}|${model}|${provider}`). Re-derive the response
-        // bucket so the secret stays in storage and never leaves in the payload.
-        const akKey = `${apiKeyIdentity(apiKeyVal, keyInfo)}|${rawModel}|${provider || "unknown"}`;
+        const storedVal = ak.apiKey;
+        // New rows store the stable identity (key id / anon-digest / local-no-key);
+        // legacy rows store the raw key. Resolve both without exposing the secret.
+        let keyInfo = null;
+        let identity = "local-no-key";
+        if (!storedVal || storedVal === "local-no-key") {
+          identity = "local-no-key";
+        } else if (apiKeyIdMap[storedVal]) {
+          keyInfo = apiKeyIdMap[storedVal];
+          identity = storedVal;
+        } else if (apiKeyMap[storedVal]) {
+          keyInfo = apiKeyMap[storedVal];
+          identity = apiKeyIdentity(storedVal, keyInfo);
+        } else if (typeof storedVal === "string" && storedVal.startsWith("anon-")) {
+          identity = storedVal;
+        } else {
+          identity = apiKeyIdentity(storedVal, null);
+        }
+        const apiKeyMasked = keyInfo ? maskApiKey(keyInfo.key) : (ak.apiKeyMasked ?? (identity === "local-no-key" ? null : maskApiKey(storedVal)));
+        const keyName = keyInfo?.name || ak.keyName || (identity === "local-no-key" ? "Local (No API Key)" : String(storedVal).slice(0, 8) + "...");
+        const apiKeyKey = identity;
+        const akKey = `${identity}|${rawModel}|${provider || "unknown"}`;
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
         }
@@ -646,15 +677,16 @@ export async function getUsageStats(period = "all") {
       }
 
       if (r.apiKey && typeof r.apiKey === "string") {
-        const keyInfo = apiKeyMap[r.apiKey];
-        const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
+        const keyInfo = apiKeyMap[r.apiKey] || null;
         const apiKeyMasked = maskApiKey(r.apiKey);
+        const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
         // Not the mask: every key on one install shares its first 8 characters,
         // so masking folded them all onto one bucket and the first key seen
         // absorbed the rest of the install's requests, tokens and cost (#3640).
-        const akKey = `${apiKeyIdentity(r.apiKey, keyInfo)}|${r.model}|${r.provider || "unknown"}`;
+        const identity = apiKeyIdentity(r.apiKey, keyInfo);
+        const akKey = `${identity}|${r.model}|${r.provider || "unknown"}`;
         if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: identity, lastUsed: r.timestamp };
         }
         const ake = stats.byApiKey[akKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
