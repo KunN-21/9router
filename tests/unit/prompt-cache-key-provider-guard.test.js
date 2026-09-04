@@ -19,19 +19,25 @@ const responsesBody = () => ({
 });
 
 describe("prompt_cache_key provider-boundary guard (Responses → Chat hop only)", () => {
-  it("responses → chat keeps the key for a provider declaring preservePromptCacheKey (openai)", () => {
-    const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, "gpt-4o", responsesBody(), true, {}, "openai");
+  it.each(["openai", "azure", "github", "codex", "grok-cli"])(
+    "responses → chat keeps the key for quirked provider %s",
+    (provider) => {
+      const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, "gpt-4o", responsesBody(), true, {}, provider);
 
-    expect(out.prompt_cache_key).toBe(KEY);
-    expect(out.messages?.[0]?.role).toBe("user");
-  });
+      expect(out.prompt_cache_key).toBe(KEY);
+      expect(out.messages?.[0]?.role).toBe("user");
+    },
+  );
 
-  it("responses → chat strips the key for a provider without the quirk (groq)", () => {
-    const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, "llama-3.3-70b", responsesBody(), true, {}, "groq");
+  it.each(["groq", "cerebras", "no-such-provider"])(
+    "responses → chat strips the key for strict/unknown provider %s",
+    (provider) => {
+      const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, "llama-3.3-70b", responsesBody(), true, {}, provider);
 
-    expect(out.prompt_cache_key).toBeUndefined();
-    expect(out.messages?.[0]?.role).toBe("user");
-  });
+      expect(out.prompt_cache_key).toBeUndefined();
+      expect(out.messages?.[0]?.role).toBe("user");
+    },
+  );
 
   it("chat → chat retains the key for a non-quirk provider (opencode session affinity)", () => {
     const out = translateRequest(FORMATS.OPENAI, FORMATS.OPENAI, "any", chatBody(), true, {}, "opencode");
@@ -53,10 +59,15 @@ describe("prompt_cache_key provider-boundary guard (Responses → Chat hop only)
     expect(chatToResponses.prompt_cache_key).toBe(KEY);
   });
 
-  it("stripUnsupportedChatExtensions is fail-open on unknown provider and null/non-object bodies", () => {
+  it("stripUnsupportedChatExtensions leaves null/non-object bodies untouched, never throws", () => {
     expect(stripUnsupportedChatExtensions("no-such-provider", null)).toBeNull();
     expect(stripUnsupportedChatExtensions(undefined, undefined)).toBeUndefined();
     expect(stripUnsupportedChatExtensions("groq", "text")).toBe("text");
+    // Unknown provider: not fail-open — key stripped (fail-closed); legacy input only untouched when no key present
+    const strictOut = stripUnsupportedChatExtensions("no-such-provider", { prompt_cache_key: KEY });
+    expect(strictOut.prompt_cache_key).toBeUndefined();
+    const legacyOut = stripUnsupportedChatExtensions(undefined, { messages: [] });
+    expect(legacyOut).toEqual({ messages: [] });
     expect(() => stripUnsupportedChatExtensions("no-such-provider", { prompt_cache_key: KEY })).not.toThrow();
   });
 });

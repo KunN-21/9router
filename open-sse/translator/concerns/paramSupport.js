@@ -47,7 +47,9 @@ function clampNumber(body, key, ceiling) {
 }
 
 // Drop Chat Completions extension params for providers that do not declare support.
-// Mutates body in place; fail-open (never throws); returns body.
+// Mutates body in place; never throws; returns body.
+// Fail-closed on unexpected error (strip the new extension keys); fail-open only
+// for null/non-object bodies, returned untouched above.
 export function stripUnsupportedChatExtensions(provider, body) {
   if (!body || typeof body !== "object") return body;
   try {
@@ -57,7 +59,10 @@ export function stripUnsupportedChatExtensions(provider, body) {
       if (body[key] !== undefined) delete body[key];
     }
   } catch {
-    // fail-open: leave the body untouched
+    // fail-closed: provider lookup failed — drop the keys so strict endpoints never see them
+    for (const { key } of CHAT_EXTENSION_PARAMS) {
+      try { if (body[key] !== undefined) delete body[key]; } catch { /* ignore */ }
+    }
   }
   return body;
 }
