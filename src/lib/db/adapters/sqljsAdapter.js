@@ -49,17 +49,23 @@ export async function createSqlJsAdapter(filePath) {
     const dir = path.dirname(filePath);
     const tmpPath = path.join(dir, `.${path.basename(filePath)}.tmp-${process.pid}-${persistSeq++}`);
 
+    let fileMode = 0o600;
+    try {
+      fileMode = fs.statSync(filePath).mode & 0o777;
+    } catch { /* new database: restrictive default */ }
+
     let fd;
     try {
-      fd = fs.openSync(tmpPath, "w");
+      fd = fs.openSync(tmpPath, "w", fileMode);
       fs.writeFileSync(fd, Buffer.from(data));
       fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
     } catch (err) {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
       try { fs.unlinkSync(tmpPath); } catch { /* nothing to clean up */ }
       throw err;
     }
-    fs.closeSync(fd);
 
     try {
       fs.renameSync(tmpPath, filePath);
@@ -144,8 +150,11 @@ export async function createSqlJsAdapter(filePath) {
 
   function close() {
     if (saveTimer) clearTimeout(saveTimer);
-    if (dirty) persist();
-    db.close();
+    try {
+      if (dirty) persist();
+    } finally {
+      db.close();
+    }
   }
 
   // Flush on shutdown

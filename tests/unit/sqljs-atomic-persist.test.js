@@ -107,4 +107,81 @@ describe("sql.js adapter persistence", () => {
     reopened.close();
     expect(strayFiles()).toEqual([]);
   });
+
+  it("releases the handle when persist fails during close", async () => {
+    const adapter = await seededAdapter();
+    adapter.close();
+    const before = fs.readFileSync(dbPath);
+
+    const second = await createSqlJsAdapter(dbPath);
+    second.run("INSERT INTO t(v) VALUES(?)", ["second"]);
+    const closeSpy = vi.spyOn(second.raw, "close");
+
+    const realWrite = fs.writeFileSync;
+    vi.spyOn(fs, "writeFileSync").mockImplementation((target, data, options) => {
+      if (typeof target === "number") throw new Error("simulated disk failure");
+      return realWrite(target, data, options);
+    });
+
+    expect(() => second.close()).toThrow(/simulated disk failure/);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(dbPath)).toEqual(before);
+    expect(strayFiles()).toEqual([]);
+  });
+
+  it("cleans up the temp file when closeSync fails", async () => {
+    const adapter = await seededAdapter();
+    adapter.close();
+    const before = fs.readFileSync(dbPath);
+
+    const second = await createSqlJsAdapter(dbPath);
+    second.run("INSERT INTO t(v) VALUES(?)", ["second"]);
+
+    // One-shot: only persist's close fails. A permanent mock would also break
+    // fs.readFileSync below, which closes its fd via closeSync internally.
+    vi.spyOn(fs, "closeSync").mockImplementationOnce(() => {
+      throw new Error("simulated close failure");
+    });
+
+    expect(() => second.close()).toThrow(/simulated close failure/);
+    expect(fs.readFileSync(dbPath)).toEqual(before);
+    expect(strayFiles()).toEqual([]);
+  });
+
+  it("preserves the existing database file mode on publish", async () => {
+    const adapter = await seededAdapter();
+    adapter.close();
+    const expectedMode = fs.statSync(dbPath).mode & 0o777;
+
+    const second = await createSqlJsAdapter(dbPath);
+    second.run("INSERT INTO t(v) VALUES(?)", ["second"]);
+
+    const modes = [];
+    const realOpen = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation((target, flags, mode) => {
+      if (String(target).includes(".tmp-")) modes.push(mode);
+      return realOpen(target, flags, mode);
+    });
+    second.close();
+
+    expect(modes.length).toBeGreaterThan(0);
+    for (const m of modes) expect(m).toBe(expectedMode);
+    expect(fs.statSync(dbPath).mode & 0o777).toBe(expectedMode);
+  });
+
+  it("uses a restrictive default mode for a new database", async () => {
+    const modes = [];
+    const realOpen = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation((target, flags, mode) => {
+      if (String(target).includes(".tmp-")) modes.push(mode);
+      return realOpen(target, flags, mode);
+    });
+
+    const adapter = await createSqlJsAdapter(dbPath);
+    adapter.run("CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY, v TEXT)");
+    adapter.close();
+
+    expect(modes.length).toBeGreaterThan(0);
+    for (const m of modes) expect(m).toBe(0o600);
+  });
 });
