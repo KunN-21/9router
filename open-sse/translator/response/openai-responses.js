@@ -467,13 +467,25 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
   // Function call started (standard function_call or custom_tool_call)
   if (eventType === "response.output_item.added" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
     const item = data.item;
-    state.currentToolCallId = item.call_id || fallbackToolCallId();
+    const callId = item.call_id || fallbackToolCallId();
+    state.currentToolCallId = callId;
+    // Parallel calls arrive as batched added events before any done, so the
+    // index must be assigned here (per call_id), not at done time. Otherwise
+    // every parallel call shares index 0 and downstream merges them into one
+    // tool_use with concatenated JSON (Claude InputValidationError).
+    state.toolCallIdToIndex ??= {};
+    let callIndex = state.toolCallIdToIndex[callId];
+    if (callIndex === undefined) {
+      callIndex = state.toolCallIndex;
+      state.toolCallIdToIndex[callId] = callIndex;
+      state.toolCallIndex++;
+    }
 
     return buildChunk(
       { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
       {
         tool_calls: [{
-          index: state.toolCallIndex,
+          index: callIndex,
           id: state.currentToolCallId,
           type: OPENAI_BLOCK.FUNCTION,
           function: { name: item.name || "", arguments: "" }
@@ -487,15 +499,33 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     const argsDelta = data.delta || "";
     if (!argsDelta) return null;
 
+    // Route the delta to its own call via item_id (fc_<call_id>/ctc_<call_id)).
+    // Falls back to the most recent call, then to legacy shared-index behavior.
+    let callIndex = state.toolCallIndex;
+    const rawItemId = typeof data.item_id === "string" ? data.item_id : "";
+    const deltaCallId = rawItemId.replace(/^(fc|ctc)_/, "");
+    if (deltaCallId && state.toolCallIdToIndex?.[deltaCallId] !== undefined) {
+      callIndex = state.toolCallIdToIndex[deltaCallId];
+    } else if (state.currentToolCallId && state.toolCallIdToIndex?.[state.currentToolCallId] !== undefined) {
+      callIndex = state.toolCallIdToIndex[state.currentToolCallId];
+    }
+
     return buildChunk(
       { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
-      { tool_calls: [{ index: state.toolCallIndex, function: { arguments: argsDelta } }] }
+      { tool_calls: [{ index: callIndex, function: { arguments: argsDelta } }] }
     );
   }
 
-  // Function call done (standard or custom_tool_call variant)
+  // Function call done (standard or custom_tool_call variant).
+  // Index was already assigned at added time; done is a no-op for indexing so
+  // batched parallel dones cannot shift later calls.
   if (eventType === "response.output_item.done" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
-    state.toolCallIndex++;
+    return null;
+  }
+
+  // Arguments-done arrives per call ahead of output_item.done on strict
+  // Responses streams; also a no-op for indexing.
+  if (eventType === "response.function_call_arguments.done" || eventType === "response.custom_tool_call_input.done") {
     return null;
   }
 
