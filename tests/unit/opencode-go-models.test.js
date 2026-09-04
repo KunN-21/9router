@@ -1,20 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { PROVIDER_MODELS, getModelSupportedFormats } from "../../open-sse/config/providerModels.js";
+import { PROVIDER_MODELS, getModelSupportedFormats, getModelTargetFormat } from "../../open-sse/config/providerModels.js";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { resolveTransport } from "../../open-sse/services/provider.js";
+import opencodeRegistry from "../../open-sse/providers/registry/opencode.js";
 
 // Chat-only models (no /messages, no /responses support on opencode-go)
 const CHAT_ONLY = [
   "glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6",
   "mimo-v2.5", "mimo-v2.5-pro",
+  "ox-alpha-free",
 ];
 // Models that also expose the Anthropic /messages endpoint
 const CLAUDE_CAPABLE = ["minimax-m3", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"];
-// DeepSeek is chat-completions only: despite a live matrix passing simple
-// /messages probes, real Claude Code payloads (duplicate tool names, rich
-// tools) get 400 from the /messages shim. Keep it on /chat/completions
-// (pre-#3278 behavior).
-const DEEPSEEK_CAPABLE = ["deepseek-v4-pro", "deepseek-v4-flash"];
+// Official OpenCode Go docs expose DeepSeek only through /chat/completions.
+const DEEPSEEK_CHAT_ONLY = ["deepseek-v4-pro", "deepseek-v4-flash"];
 
 // Mirror of chatCore's per-model transport guard: use the sourceFormat-matched
 // transport only when the model declares support for that sourceFormat.
@@ -29,30 +28,43 @@ describe("OpenCode Go model catalog", () => {
   it("matches the documented model IDs", () => {
     const ids = (PROVIDER_MODELS["opencode-go"] || []).map((m) => m.id);
     expect(ids).toEqual([
-      "glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6",
-      "deepseek-v4-pro", "deepseek-v4-flash",
+      "grok-4.5", "gpt-5.6-luna", "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1",
+      "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
+      "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
       "mimo-v2.5", "mimo-v2.5-pro",
       "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-      "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
+      "muse-spark-1.2-contributor",
+      "muse-spark-1.3-contributor",
+      "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
+      "hy3",
+      "ox-alpha-free",
     ]);
   });
 });
 
 describe("OpenCode Go per-model supportedFormats", () => {
+  it("declares Muse Spark 1.2 Contributor as Responses-only", () => {
+    const ids = (PROVIDER_MODELS["opencode-go"] || []).map((m) => m.id);
+    expect(ids).toContain("muse-spark-1.2-contributor");
+    expect(ids).not.toContain("muse-spark-1.2");
+    expect(getModelSupportedFormats("opencode-go", "muse-spark-1.2-contributor")).toEqual(["openai-responses"]);
+    expect(getModelTargetFormat("opencode-go", "muse-spark-1.2-contributor")).toBe("openai-responses");
+  });
+
   it("declares [openai, claude] for MiniMax + Qwen models", () => {
     for (const m of CLAUDE_CAPABLE) {
       expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai", "claude"]);
     }
   });
 
-  it("declares [openai] only for chat-only models (GLM/Kimi/MiMo) → guards /messages routing", () => {
+  it("declares [openai] only for chat-only models (GLM/Kimi/MiMo)", () => {
     for (const m of CHAT_ONLY) {
       expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai"]);
     }
   });
 
-  it("declares [openai] only for DeepSeek — /messages shim breaks on real payloads", () => {
-    for (const m of DEEPSEEK_CAPABLE) {
+  it("declares [openai] only for DeepSeek until other endpoints are officially supported", () => {
+    for (const m of DEEPSEEK_CHAT_ONLY) {
       expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai"]);
     }
   });
@@ -61,6 +73,17 @@ describe("OpenCode Go per-model supportedFormats", () => {
     expect(getModelSupportedFormats("opencode-go", "deepseek-v4-flash(max)")).toEqual(["openai"]);
     expect(getModelSupportedFormats("opencode-go", "glm-5.2(max)")).toEqual(["openai"]);
     expect(getModelSupportedFormats("opencode-go", "minimax-m3(max)")).toEqual(["openai", "claude"]);
+  });
+});
+
+describe("OpenCode Go Muse Spark tool_choice quirk (config-driven)", () => {
+  it("declares the exact auto-tool-choice model list on the opencode-go transport quirks", () => {
+    expect(PROVIDERS["opencode-go"].quirks?.forceAutoToolChoiceModels).toEqual([
+      "muse-spark-1.2-contributor",
+      "muse-spark-1.3-contributor",
+    ]);
+    // The quirk must NOT leak onto the free (opencode) provider — only Go demotes.
+    expect(PROVIDERS["opencode"].quirks?.forceAutoToolChoiceModels).toBeUndefined();
   });
 });
 
@@ -96,17 +119,19 @@ describe("OpenCode Go per-model transport guard (chatCore logic)", () => {
     }
   });
 
-  it("does NOT route DeepSeek to /messages on a claude-format request", () => {
-    for (const m of DEEPSEEK_CAPABLE) {
+  it("does NOT route DeepSeek to /messages or /responses", () => {
+    for (const m of DEEPSEEK_CHAT_ONLY) {
       expect(pickTransport("opencode-go", "claude", "opencode-go", m)).toBeNull();
+      expect(pickTransport("opencode-go", "openai-responses", "opencode-go", m)).toBeNull();
     }
   });
 
-  it("does NOT route DeepSeek(max) to /messages on a claude-format request", () => {
+  it("does NOT route DeepSeek(max) to /messages or /responses", () => {
     expect(pickTransport("opencode-go", "claude", "opencode-go", "deepseek-v4-flash(max)")).toBeNull();
+    expect(pickTransport("opencode-go", "openai-responses", "opencode-go", "deepseek-v4-flash(max)")).toBeNull();
   });
 
-  it("does NOT route GLM(max) to /messages on a claude-format request (suffix bypass fix)", () => {
+  it("does NOT route GLM(max) to /messages on a claude-format request", () => {
     expect(pickTransport("opencode-go", "claude", "opencode-go", "glm-5.2(max)")).toBeNull();
   });
 
@@ -121,9 +146,47 @@ describe("OpenCode Go per-model transport guard (chatCore logic)", () => {
     }
   });
 
-  it("does NOT route DeepSeek to /responses", () => {
-    for (const m of DEEPSEEK_CAPABLE) {
-      expect(pickTransport("opencode-go", "openai-responses", "opencode-go", m)).toBeNull();
-    }
+  it("routes Ox Alpha Free + openai-format client to the Go Chat Completions endpoint", () => {
+    const t = pickTransport("opencode-go", "openai", "opencode-go", "ox-alpha-free");
+    expect(t?.baseUrl).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(getModelTargetFormat("opencode-go", "ox-alpha-free")).toBeNull();
+  });
+});
+
+describe("Muse Spark 1.3 registries and supportedFormats", () => {
+  it("declares both 1.3 and retained 1.2 Muse Spark models on both aliases over openai-responses", () => {
+    expect(PROVIDER_MODELS["opencode-go"].map((m) => m.id)).toEqual(expect.arrayContaining(["muse-spark-1.3-contributor", "muse-spark-1.2-contributor"]));
+    expect(PROVIDER_MODELS.oc.map((m) => m.id)).toEqual(expect.arrayContaining(["muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free"]));
+    expect(getModelSupportedFormats("opencode-go", "muse-spark-1.3-contributor")).toEqual(["openai-responses"]);
+    expect(getModelSupportedFormats("oc", "muse-spark-1.3-contributor-free")).toEqual(["openai-responses"]);
+    expect(getModelTargetFormat("opencode-go", "muse-spark-1.3-contributor")).toBe("openai-responses");
+    expect(getModelTargetFormat("oc", "muse-spark-1.3-contributor-free")).toBe("openai-responses");
+  });
+
+  it("strips a recognized 1.3 thinking suffix to the same Formats metadata", () => {
+    expect(getModelSupportedFormats("opencode-go", "muse-spark-1.3-contributor(high)")).toEqual(["openai-responses"]);
+    expect(getModelTargetFormat("opencode-go", "muse-spark-1.3-contributor(high)")).toBe("openai-responses");
+    expect(getModelSupportedFormats("oc", "muse-spark-1.3-contributor-free(high)")).toEqual(["openai-responses"]);
+  });
+});
+
+describe("OpenCode Free (oc) registry — Responses-only Muse Spark Free", () => {
+  const FREE_ID = "muse-spark-1.2-contributor-free";
+
+  it("declares the exact free model on the oc alias with openai-responses support", () => {
+    const ids = (PROVIDER_MODELS.oc || []).map((m) => m.id);
+    expect(ids).toContain(FREE_ID);
+    expect(getModelSupportedFormats("oc", FREE_ID)).toEqual(["openai-responses"]);
+    expect(getModelTargetFormat("oc", FREE_ID)).toBe("openai-responses");
+  });
+
+  it("keeps dynamic modelsFetcher + passthrough and only the Responses transport (no sibling)", () => {
+    expect(opencodeRegistry.modelsFetcher?.type).toBe("opencode-free");
+    expect(opencodeRegistry.passthroughModels).toBe(true);
+    // single Responses transport; openai/claude formats resolve to no transport
+    expect(PROVIDERS.opencode.transports).toEqual([{ format: "openai-responses", baseUrl: "https://opencode.ai/zen/v1/responses" }]);
+    expect(resolveTransport("opencode", "openai-responses")?.baseUrl).toBe("https://opencode.ai/zen/v1/responses");
+    expect(resolveTransport("opencode", "openai")).toBeNull();
+    expect(resolveTransport("opencode", "claude")).toBeNull();
   });
 });

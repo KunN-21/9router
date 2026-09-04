@@ -13,7 +13,7 @@ export default {
     textIcon: "OC",
     website: "https://opencode.ai/auth",
     notice: {
-      text: "OpenCode Go subscription: $5/mo (then  0/mo). Access to Kimi, GLM, Qwen, MiMo, MiniMax models.",
+      text: "OpenCode Go subscription: $5/mo (then  0/mo). Access to 20 curated coding models.",
       apiKeyUrl: "https://opencode.ai/auth",
     },
   },
@@ -21,6 +21,14 @@ export default {
   transport: {
     baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
     headers: {},
+    usage: {
+      url: "https://opencode.ai/zen/go/v1/usage",
+    },
+    quirks: {
+      // Go Muse Spark ids on /responses reject forced tool_choice (only "auto"). No broad
+      // prefix match — only these versions demote; future models default to native behavior.
+      forceAutoToolChoiceModels: ["muse-spark-1.2-contributor", "muse-spark-1.3-contributor"],
+    },
   },
   // Multi-endpoint: pick the transport matching the client sourceFormat to skip
   // translation. Guarded per-model by `supportedFormats` (see chatCore) because
@@ -31,21 +39,37 @@ export default {
     { format: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
   ],
   models: [
+    { id: "grok-4.5", name: "Grok 4.5", supportedFormats: ["openai-responses"] },
+    { id: "gpt-5.6-luna", name: "GPT 5.6 Luna", supportedFormats: ["openai-responses"] },
+    { id: "glm-5.3", name: "GLM 5.3", supportedFormats: ["openai"] },
+    { id: "glm-5.3-flash", name: "GLM 5.3 Flash (Vision)", supportedFormats: ["openai"] },
     { id: "glm-5.2", name: "GLM 5.2", supportedFormats: ["openai"] },
     { id: "glm-5.1", name: "GLM 5.1", supportedFormats: ["openai"] },
+    { id: "kimi-k3", name: "Kimi K3", supportedFormats: ["openai"] },
     { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", supportedFormats: ["openai"] },
     { id: "kimi-k2.6", name: "Kimi K2.6", supportedFormats: ["openai"] },
-    // DeepSeek stays on /chat/completions: the /messages shim returns 400
-    // for real Claude Code payloads (duplicate tools etc.), matching pre-#3278.
+    // Official docs expose DeepSeek through /chat/completions only; the
+    // /messages shim rejects real Claude Code parallel tool_use history.
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", supportedFormats: ["openai"] },
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", supportedFormats: ["openai"] },
+    { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision (Exp)", supportedFormats: ["openai"] },
     { id: "mimo-v2.5", name: "MiMo V2.5", supportedFormats: ["openai"] },
     { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro", supportedFormats: ["openai"] },
+    // ponytail: keep dual [openai,claude] despite docs /messages-only — prior passes on both; narrow to [claude] if /chat/completions shim 400 observed
     { id: "minimax-m3", name: "MiniMax M3", supportedFormats: ["openai", "claude"] },
     { id: "minimax-m2.7", name: "MiniMax M2.7", supportedFormats: ["openai", "claude"] },
     { id: "minimax-m2.5", name: "MiniMax M2.5", supportedFormats: ["openai", "claude"] },
+    { id: "muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "qwen3.8-max", name: "Qwen 3.8 Max", supportedFormats: ["openai", "claude"] },
     { id: "qwen3.7-max", name: "Qwen 3.7 Max", supportedFormats: ["openai", "claude"] },
     { id: "qwen3.7-plus", name: "Qwen 3.7 Plus", supportedFormats: ["openai", "claude"] },
     { id: "qwen3.6-plus", name: "Qwen 3.6 Plus", supportedFormats: ["openai", "claude"] },
+    { id: "hy3", name: "Hy3", supportedFormats: ["openai"] },
+    { id: "ox-alpha-free", name: "Ox Alpha Free", supportedFormats: ["openai"] },
   ],
+  features: {
+    usage: true,
+    usageApikey: true,
+  },
 };

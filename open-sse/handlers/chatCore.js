@@ -28,6 +28,7 @@ import { compressWithPxpipe } from "../rtk/pxpipe.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
+import { defaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 
 /**
@@ -57,7 +58,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, onTokenSaverEvent, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -86,11 +87,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const modelSupportedFormats = getModelSupportedFormats(alias, model);
   const runtimeTransport = resolveTransport(provider, sourceFormat);
   // Per-model guard: when a model declares supportedFormats, only use the
-  // sourceFormat-matched transport if that format is declared (opencode-go models
-  // differ — kimi/glm only do /chat/completions). Undeclared models keep the
-  // upstream default (use the transport), preserving behavior for glm/deepseek/...
-  const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
-  const targetFormat = modelTargetFormat || useTransport?.format || getTargetFormat(provider, credentials);
+  // Prefer a supported source-format transport for lossless passthrough. A
+  // model target selects fallback endpoint when source format is unsupported.
+  const sourceTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
+  const useTransport = sourceTransport || (modelTargetFormat ? resolveTransport(provider, modelTargetFormat) : null);
+  const targetFormat = useTransport?.format || modelTargetFormat || getTargetFormat(provider, credentials);
   if (useTransport && credentials) credentials.runtimeTransport = useTransport;
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
@@ -195,12 +196,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     stripContinuityFields(translatedBody);
   }
 
-  // Dedupe duplicate built-in tools when equivalent MCP tools are present.
-  // Runs for every request (not just Claude clients): exact-name duplicates
-  // break some OpenAI-compatible upstreams (e.g. OpenCode Go /messages 400
-  // {"model":"..."}), and client-tool detection can miss for wrapped clients.
+  // Tool normalization: MCP-equivalent built-in dedup (Claude clients) + same-name
+  // dedup for DeepSeek models (upstream rejects duplicate tool names on all endpoints).
   if (Array.isArray(translatedBody.tools)) {
-    const { tools: deduped, stripped } = dedupeTools(translatedBody.tools);
+    const { tools: deduped, stripped } = dedupeTools(translatedBody.tools, { clientTool, model });
     if (stripped.length > 0) {
       translatedBody.tools = deduped;
       log?.debug?.("TOOLDEDUP", `stripped ${stripped.length}: ${stripped.slice(0, 3).join(", ")}${stripped.length > 3 ? "..." : ""}`);
@@ -238,19 +237,57 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     delete translatedBody.tools;
   }
 
-  // Per-request opt-out: client can bypass all token savers via header
-  const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
+  // Claude tool schema requires explicit `type`; strict gateways reject legacy tools.
+  if (finalFormat === FORMATS.CLAUDE && Array.isArray(translatedBody.tools)) {
+    translatedBody.tools = defaultClaudeToolType(translatedBody.tools);
+  }
+
+  // Per-request opt-out: client can bypass all token savers via header (case-insensitive).
+  const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase?.() !== "off";
 
   // RTK: compress tool_result content
   const rtkStats = compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
   const rtkLine = formatRtkLog(rtkStats);
   if (rtkLine) console.log(rtkLine);
+  try {
+    if (tokenSaverEnabled && rtkStats?.hits?.length) {
+      const evt = {
+        saver: "rtk",
+        applied: true,
+        appliedCount: rtkStats.hits.length,
+        charsBefore: rtkStats.bytesBefore,
+        charsAfter: rtkStats.bytesAfter,
+        charsSaved: Math.max(0, (rtkStats.bytesBefore || 0) - (rtkStats.bytesAfter || 0)),
+      };
+      if (typeof onTokenSaverEvent === "function") onTokenSaverEvent(evt);
+    }
+  } catch { /* stats must not break requests */ }
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
+  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics });
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
+  // Headroom aggregate event: only after bodyBytes actually shrank (diagnostics.after populated)
+  try {
+    if (
+      tokenSaverEnabled &&
+      Number.isFinite(headroomStats?.tokens_saved) &&
+      headroomDiagnostics?.after
+    ) {
+      const evt = {
+        saver: "headroom",
+        applied: true,
+        tokensBefore: headroomStats.tokens_before,
+        tokensAfter: headroomStats.tokens_after,
+        tokensSaved: headroomStats.tokens_saved,
+        bodyBytesBefore: headroomDiagnostics.before?.bodyBytes,
+        bodyBytesAfter: headroomDiagnostics.after?.bodyBytes,
+        reason: isHeadroomPhantomSavings(headroomStats, headroomDiagnostics) ? "phantom" : undefined,
+      };
+      if (typeof onTokenSaverEvent === "function") onTokenSaverEvent(evt);
+    }
+  } catch { /* stats must not break requests */ }
   if (headroomLine) {
     log?.info?.("HEADROOM", `${headroomLine}${headroomSizeLine ? ` | ${headroomSizeLine}` : ""}`);
     if (isHeadroomPhantomSavings(headroomStats, headroomDiagnostics)) {
@@ -277,7 +314,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   let pxpipeSummary = null;
   if (pxpipeEnabled) {
     const pxpipeResult = await compressWithPxpipe(translatedBody, {
-      enabled: true, format: finalFormat, model: upstreamModel,
+      enabled: tokenSaverEnabled, format: finalFormat, model: upstreamModel,
       minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
     });
     pxpipeSummary = pxpipeResult.summary;

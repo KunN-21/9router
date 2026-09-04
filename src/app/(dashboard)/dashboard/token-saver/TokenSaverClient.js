@@ -10,10 +10,14 @@ import {
   PONYTAIL_LEVELS,
 } from "../endpoint/endpointConstants";
 
+const TOKEN_SAVER_STATS_REFRESH_MS = 30_000;
+const TOKEN_SAVER_STATS_TIMEOUT_MS = 10_000;
+
 export default function TokenSaverClient() {
   const [rtkEnabled, setRtkEnabledState] = useState(true);
   const [headroomEnabled, setHeadroomEnabled] = useState(false);
   const [headroomUrl, setHeadroomUrl] = useState("http://localhost:8787");
+  const [headroomTimeoutMs, setHeadroomTimeoutMs] = useState(3000);
   const [headroomStatus, setHeadroomStatus] = useState({
     installed: false,
     running: false,
@@ -406,6 +410,13 @@ export default function TokenSaverClient() {
     patchSetting({ pxpipeMinChars: next });
   };
 
+  const handleHeadroomTimeoutBlur = () => {
+    const raw = Math.round(Number(headroomTimeoutMs));
+    const next = Number.isFinite(raw) && raw > 0 ? raw : 3000;
+    setHeadroomTimeoutMs(next);
+    patchSetting({ headroomTimeoutMs: next });
+  };
+
   useEffect(() => {
     const loadSettings = async () => {
       try {
@@ -415,6 +426,7 @@ export default function TokenSaverClient() {
           setRtkEnabledState(data.rtkEnabled !== false);
           setHeadroomEnabled(!!data.headroomEnabled);
           setHeadroomUrl(data.headroomUrl || "http://localhost:8787");
+          if (typeof data.headroomTimeoutMs === "number") setHeadroomTimeoutMs(data.headroomTimeoutMs);
           setCodeAware(data.headroomCodeAware === true);
           setKompress(data.headroomKompress !== false);
           setCavemanEnabled(!!data.cavemanEnabled);
@@ -463,6 +475,55 @@ export default function TokenSaverClient() {
     pxpipeHealthy || pxpipeStatus.running
       ? "bg-success/15 text-success"
       : "bg-warning/15 text-warning";
+
+  // Aggregate observability (truthful units only; see /api/token-saver/stats)
+  const [tsStats, setTsStats] = useState(undefined); // undefined=loading, null=unavailable
+  useEffect(() => {
+    let alive = true;
+    let inFlight = false;
+    let activeController = null;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const requestController = new AbortController();
+      activeController = requestController;
+      let timeoutId;
+      try {
+        timeoutId = setTimeout(
+          () => requestController.abort(),
+          TOKEN_SAVER_STATS_TIMEOUT_MS
+        );
+        const res = await fetch("/api/token-saver/stats", {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-store" },
+          signal: requestController.signal,
+        });
+        if (!res.ok) throw new Error("stats fetch failed");
+        const data = await res.json();
+        if (alive) setTsStats(data);
+      } catch (e) {
+        if (e?.name === "AbortError") {
+          if (!alive) return;
+          // timeout abort while mounted: same as transient network failure
+        }
+        if (alive)
+          setTsStats((current) =>
+            current === undefined ? null : current
+          );
+      } finally {
+        clearTimeout(timeoutId);
+        if (activeController === requestController) activeController = null;
+        inFlight = false;
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, TOKEN_SAVER_STATS_REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      activeController?.abort();
+    };
+  }, []);
 
   return (
     <div className="space-y-6 p-6">
@@ -732,8 +793,6 @@ export default function TokenSaverClient() {
             />
           </div>
         </div>
-        {/* PXPIPE hidden from UI — experimental, not exposed to users yet */}
-        {false && (
         <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-3 flex-wrap">
@@ -777,7 +836,105 @@ export default function TokenSaverClient() {
             onChange={() => handlePxpipeEnabled(!pxpipeEnabled)}
           />
         </div>
-        )}
+
+        {/* Aggregate observability — three separate units, never summed */}
+        <section className="pt-4 mt-4 border-t border-border" aria-label="Token Saver aggregate statistics">
+          <h3 className="text-base font-semibold mb-2">Aggregate statistics</h3>
+          {tsStats === undefined ? (
+            <p className="text-sm text-text-muted">Loading…</p>
+          ) : tsStats === null ? (
+            <p className="text-sm text-text-muted">Statistics unavailable</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="rounded border border-border p-3">
+                  <p className="text-xs font-medium text-text-muted">RTK</p>
+                  <p className="text-lg font-semibold">
+                    {(tsStats.windows?.today?.charsReduced ?? 0).toLocaleString()}
+                  </p>
+                  <p className="text-xs text-text-muted">chars reduced today</p>
+                </div>
+                <div className="rounded border border-border p-3">
+                  <p className="text-xs font-medium text-text-muted">Headroom</p>
+                  {tsStats.sources?.headroom?.state === "ok" ? (
+                    <>
+                      <p className="text-lg font-semibold">
+                        {(tsStats.windows?.today?.proxyTokensSaved ?? 0).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-text-muted">
+                        proxy-reported tokens saved today ·{" "}
+                        {(tsStats.windows?.today?.bodyBytesReduced ?? 0).toLocaleString()} body bytes reduced
+                      </p>
+                    </>
+                  ) : tsStats.sources?.headroom?.state === "idle" ? (
+                    <p className="text-xs text-text-muted">No compression data yet</p>
+                  ) : (
+                    <p className="text-xs text-warning">Headroom statistics unavailable</p>
+                  )}
+                </div>
+                <div className="rounded border border-border p-3">
+                  <p className="text-xs font-medium text-text-muted">PXPIPE</p>
+                  <p className="text-lg font-semibold">
+                    {(tsStats.pxpipe?.windows?.today?.tokensSavedEst ?? 0).toLocaleString()}
+                  </p>
+                  <p className="text-xs text-text-muted">estimated tokens saved today</p>
+                </div>
+              </div>
+
+              {/* Phantom warning only when phantom events actually persisted */}
+              {tsStats.recent?.some?.((r) => r.reason === "phantom") && (
+                <p className="text-xs text-warning">
+                  Headroom recently reported token savings while the outbound body barely shrank — savings may be phantom.
+                </p>
+              )}
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <caption className="sr-only">Daily token-saver aggregates by unit</caption>
+                  <thead>
+                    <tr className="text-left text-xs text-text-muted">
+                      <th scope="col" className="py-1 pr-2 font-medium">Day (UTC)</th>
+                      <th scope="col" className="py-1 pr-2 font-medium">RTK chars</th>
+                      <th scope="col" className="py-1 pr-2 font-medium">Headroom tokens</th>
+                      <th scope="col" className="py-1 pr-2 font-medium">PXPIPE est. tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(tsStats.timeline || []).slice(-7).map((row) => (
+                      <tr key={row.date} className="border-t border-border">
+                        <td className="py-1 pr-2">{row.date}</td>
+                        <td className="py-1 pr-2">{(row.charsReduced ?? 0).toLocaleString()}</td>
+                        <td className="py-1 pr-2">{(row.proxyTokensSaved ?? 0).toLocaleString()}</td>
+                        <td className="py-1 pr-2">{(row.estTokensSaved ?? 0).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="rounded border border-border p-3">
+                  <p className="text-xs font-medium text-text-muted">Caveman</p>
+                  <p className="text-sm">
+                    {cavemanEnabled ? `Enabled (${cavemanLevel})` : "Disabled"}
+                  </p>
+                  <p className="text-xs text-text-muted mt-1">
+                    Counterfactual output savings are not measurable.
+                  </p>
+                </div>
+                <div className="rounded border border-border p-3">
+                  <p className="text-xs font-medium text-text-muted">Ponytail</p>
+                  <p className="text-sm">
+                    {ponytailEnabled ? `Enabled (${ponytailLevel})` : "Disabled"}
+                  </p>
+                  <p className="text-xs text-text-muted mt-1">
+                    Counterfactual output savings are not measurable.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
       </Card>
 
       <Modal
@@ -816,6 +973,19 @@ export default function TokenSaverClient() {
             <p className="text-xs text-text-muted">
               Use a local proxy for Start/Stop, or an external Docker sidecar
               like http://headroom:8787.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium">Timeout (ms)</p>
+            <Input
+              value={String(headroomTimeoutMs)}
+              onChange={(e) => setHeadroomTimeoutMs(e.target.value)}
+              onBlur={handleHeadroomTimeoutBlur}
+              placeholder="3000"
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-text-muted">
+              Request timeout in milliseconds. Defaults to 3000 ms.
             </p>
           </div>
           {headroomManaged ? (
@@ -889,7 +1059,7 @@ export default function TokenSaverClient() {
       </Modal>
 
       <Modal
-        isOpen={false}
+        isOpen={showPxpipeModal}
         title={pxpipeStatus.installed ? "PXPIPE" : "Setup PXPIPE"}
         onClose={() => setShowPxpipeModal(false)}
       >

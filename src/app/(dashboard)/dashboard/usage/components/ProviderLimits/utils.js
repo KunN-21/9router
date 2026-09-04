@@ -379,8 +379,17 @@ export function parseQuotaData(provider, data) {
       case "codex":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
+            let displayName = quotaType;
+            if (quotaType === "spark_session") displayName = "Spark (5h)";
+            else if (quotaType === "spark_weekly") displayName = "Spark (Weekly)";
+            else if (quotaType === "session") displayName = "5h";
+            else if (quotaType === "weekly") displayName = "Weekly";
+            else if (quotaType === "review_session") displayName = "Review (5h)";
+            else if (quotaType === "review_weekly") displayName = "Review (Weekly)";
+
             normalizedQuotas.push({
-              name: quotaType,
+              name: displayName,
+              quotaType,
               used: quota.used || 0,
               total: quota.total || 0,
               remaining: quota.remaining,
@@ -518,8 +527,13 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "opencode-go":
       case "deepseek":
-        // Credit balance — remainingPercentage only (no absolute remaining).
+        // Credit balance, and OpenCode Go's percent-per-window: forward
+        // remainingPercentage and never an absolute `remaining` (the UI reads
+        // `remaining` as a 0-100 percentage). For a used=percent/total=100 row
+        // the default branch happens to compute the same number, so this case
+        // is for intent and for staying correct if the shape ever changes.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({
@@ -544,6 +558,22 @@ export function parseQuotaData(provider, data) {
               total: quota.total || 0,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
+            });
+          });
+        }
+        break;
+
+      case "zed":
+        // Edit predictions + optional hosted model_requests; unlimited uses remainingPercentage.
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+              unlimited: quota.unlimited,
             });
           });
         }
@@ -583,4 +613,30 @@ export function parseQuotaData(provider, data) {
   }
 
   return normalizedQuotas;
+}
+
+export function formatSubscriptionActiveUntil(value) {
+  if (value == null || value === "") return null;
+  let d;
+  if (value instanceof Date) d = value;
+  else if (typeof value === "number") d = new Date(value < 1e12 ? value * 1000 : value);
+  else if (typeof value === "string") {
+    const t = value.trim();
+    if (!t) return null;
+    if (/^\d+$/.test(t)) {
+      const n = Number(t);
+      if (!Number.isFinite(n)) return null;
+      d = new Date(n < 1e12 ? n * 1000 : n);
+    } else d = new Date(t);
+  } else return null;
+  if (!d || !Number.isFinite(d.getTime())) return null;
+  const dateTime = d.toISOString();
+  const display = d.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  return { dateTime, display };
+}
+
+export function shouldShowSubscriptionExpiry({ subscriptionPlan, subscriptionActiveUntil } = {}) {
+  const normalizedPlan = typeof subscriptionPlan === "string" ? subscriptionPlan.trim().toLowerCase() : "";
+  if (normalizedPlan === "free") return false;
+  return formatSubscriptionActiveUntil(subscriptionActiveUntil) != null;
 }
