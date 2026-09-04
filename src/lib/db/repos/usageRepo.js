@@ -113,7 +113,12 @@ function aggregateEntryToDay(day, entry, keyInfo) {
   // stable identity, never the raw key.
   const apiKeyMasked = keyInfo?.key ? maskApiKey(keyInfo.key) : (rawApiKey ? maskApiKey(rawApiKey) : null);
   const keyName = keyInfo?.name || (rawApiKey ? rawApiKey.slice(0, 8) + "..." : "Local (No API Key)");
-  addToCounter(day.byApiKey, akModelKey, { ...vals, meta: { rawModel: entry.model, provider: entry.provider, apiKey: identity, apiKeyMasked, keyName } });
+  // Write-time fallback: while the key row exists the UUID leads; after a
+  // delete the id no longer resolves, so keep the non-secret digest the
+  // 24h/history path derives from the raw key. Without it the daily row
+  // would hash the UUID and split identity from 24h.
+  const apiKeyFallback = keyInfo?.id && rawApiKey ? apiKeyIdentity(rawApiKey, null) : null;
+  addToCounter(day.byApiKey, akModelKey, { ...vals, meta: { rawModel: entry.model, provider: entry.provider, apiKey: identity, apiKeyMasked, keyName, ...(apiKeyFallback ? { apiKeyFallback } : {}) } });
 
   const endpoint = entry.endpoint || "Unknown";
   const epKey = `${endpoint}|${entry.model}|${entry.provider || "unknown"}`;
@@ -550,6 +555,11 @@ export async function getUsageStats(period = "all") {
         } else if (apiKeyIdMap[storedVal]) {
           keyInfo = apiKeyIdMap[storedVal];
           identity = storedVal;
+        } else if (typeof storedVal === "string" && !storedVal.startsWith("anon-") && typeof ak.apiKeyFallback === "string" && ak.apiKeyFallback.startsWith("anon-")) {
+          // The stored id no longer resolves (key deleted): fall back to the
+          // write-time digest, which matches what 24h/history derive from the
+          // raw key. Never treat an unknown stored value as identity blind.
+          identity = ak.apiKeyFallback;
         } else if (apiKeyMap[storedVal]) {
           keyInfo = apiKeyMap[storedVal];
           identity = apiKeyIdentity(storedVal, keyInfo);
