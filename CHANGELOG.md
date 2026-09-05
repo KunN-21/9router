@@ -1,3 +1,13 @@
+# v0.5.59-local.4 (2026-09-05)
+
+Batch-1 upstream integration (13 gates on fork master 0.5.59-local.3):
+- **Translator**: placeholder for binary tool_result; max_completion_tokens for reasoning; Responses prompt_cache_key parity; terminal tool-arg dedupe (shared helper, late usage preserved).
+- **Providers**: Grok 4.6 reasoning effort; Responses/registry additions; upstream route aligns endpoint with translated body (sourceTransport first).
+- **Reliability**: combo bounded empty-stream failover; upstream status classes preserved (wrong-model permanent, breaker 404→503); usage dedupe keeps same-ms rows.
+- **Usage**: identity by key id with write-time fallback; raw-free persisted rows; deleted-key daily/24h parity.
+- **DB**: sql.js atomic publish hardening; tunnel CSPRNG short ids; CLI settings refuse to clobber unreadable configs.
+- Excluded: PR #3520 (replaced by #3779 terminal dedupe).
+
 # v0.5.59 (2026-08-29)
 
 ## Features
