@@ -5,6 +5,7 @@
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
+import { FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
@@ -14,6 +15,263 @@ const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
 // Prefixes used when flattening tool turns into plain prose for panel models.
 const TOOL_CALL_PREFIX = "[Called tools: ";
 const TOOL_RESULT_PREFIX = "[Tool result: ";
+
+// Content types whose bodies the empty-stream guard is allowed to touch.
+// combo.js is shared with tts/search/image/fetch, whose 200s are audio, images
+// or plain JSON — reading those would consume a body the caller still needs.
+const SSE_CONTENT_TYPE = "text/event-stream";
+
+// Byte budget for the empty-stream peek. Bounds how much of a chatty
+// non-content stream is buffered for replay before the guard gives up and
+// passes the stream through. 256 KiB is far above any real preamble.
+const PEEK_MAX_BYTES = 256 * 1024;
+
+// Empty-stream peek bound. Shorter of the existing connect and first-chunk
+// timeouts, so a keepalive-only stream fails over fast. Both defaults are
+// <=60s; no new setting introduced. Streams that already carry content
+// resolve on the first content frame, not on this bound.
+function peekTimeoutMs() {
+  const candidates = [FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS]
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (candidates.length === 0) return 60 * 1000;
+  return Math.min(...candidates);
+}
+
+// Does an SSE data frame carry output the client can actually render or act on?
+//
+// Deliberately stricter than "is this frame well-formed": role announcements,
+// finish_reason, message envelopes and zero-token usage frames are all things a
+// provider emits *around* an answer. A stream made only of those is precisely
+// the empty stream #3463 is about, so none of them count as content on their own.
+function frameCarriesContent(line) {
+  if (!line.startsWith("data:")) return false;
+  const payload = line.slice(5).trim();
+  if (!payload || payload === "[DONE]") return false;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return false;
+  }
+
+  // A usage frame counts only if it reports generated output. A frame carrying
+  // prompt tokens and completion_tokens: 0 is an accounting record, not an answer.
+  if (hasOutputTokens(parsed.usage) || hasOutputTokens(parsed.response?.usage)) return true;
+
+  // OpenAI chat: text, reasoning, or a tool call.
+  const delta = parsed.choices?.[0]?.delta;
+  if (nonEmptyString(delta?.content)) return true;
+  if (nonEmptyString(delta?.reasoning_content) || nonEmptyString(delta?.reasoning)) return true;
+  if (delta?.tool_calls?.length || delta?.function_call) return true;
+
+  // Claude: only the delta events carry payload. message_start/content_block_start
+  // are envelopes; a tool_use block start is the exception, since the tool name
+  // arrives there and the arguments follow as input_json_delta.
+  if (parsed.type === "content_block_delta") {
+    const d = parsed.delta;
+    if (nonEmptyString(d?.text) || nonEmptyString(d?.partial_json) || nonEmptyString(d?.thinking)) return true;
+  }
+  if (parsed.type === "content_block_start" && parsed.content_block?.type === "tool_use") return true;
+
+  // OpenAI Responses API: output_text/function-call argument deltas.
+  if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
+
+  // Gemini: a candidate with a part that actually holds something.
+  const parts = parsed.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts) && parts.some((p) => nonEmptyString(p?.text) || p?.functionCall || p?.inlineData)) return true;
+
+  // Ollama NDJSON.
+  if (nonEmptyString(parsed.message?.content) || nonEmptyString(parsed.response)) return true;
+  if (parsed.message?.tool_calls?.length) return true;
+
+  return false;
+}
+
+function nonEmptyString(v) {
+  return typeof v === "string" && v.length > 0;
+}
+
+// Usage is proof of an answer only when it reports generated tokens. Mirrors the
+// completion/output-token check rather than accepting any usage object, so a
+// prompt-tokens-only record is not mistaken for output.
+function hasOutputTokens(usage) {
+  if (!usage || typeof usage !== "object") return false;
+  const n = Number(
+    usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? 0
+  );
+  return Number.isFinite(n) && n > 0;
+}
+
+/**
+ * Read a streaming provider response until the first frame that carries content.
+ *
+ * A provider can return HTTP 200, open an SSE stream, emit only comments or
+ * keepalives, and close cleanly. Deciding success from status alone hands that
+ * unusable stream to the client and skips the remaining combo models (#3463).
+ *
+ * Returns { hasContent, body, timedOut }. When content is found, `body` replays
+ * every byte already pulled off the socket and then continues from the live
+ * reader, so nothing is dropped — the same re-assembly qoder.js uses for its
+ * own first-frame peek. Non-SSE responses are reported as content without the
+ * body being touched at all.
+ *
+ * The wait is bounded by peekTimeoutMs() (the shorter of the existing
+ * FETCH_CONNECT_TIMEOUT_MS / STREAM_FIRST_CHUNK_TIMEOUT_MS): an upstream that
+ * streams keepalives indefinitely is reported as having no content, so the combo
+ * moves on instead of blocking here forever. Caller abort cancels the peek,
+ * prevents subsequent fallback requests, and cancels the reader; every timer
+ * and listener is cleaned up on settle.
+ */
+async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), signal = null } = {}) {
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.includes(SSE_CONTENT_TYPE) || !response.body) {
+    return { hasContent: true, body: null, timedOut: false };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  // Raw chunks are what gets replayed. Decoded text is used only for scanning:
+  // re-encoding decoded text would rewrite any byte upstream sent that is not
+  // valid UTF-8 into U+FFFD and corrupt the client's stream.
+  const rawChunks = [];
+  let rawBytes = 0;
+  let pending = "";
+  let hasContent = false;
+  let upstreamDone = false;
+  let timedOut = false;
+  let settled = false;
+  let timer = null;
+
+  let abortResolve = null;
+  const abortPromise = signal
+    ? new Promise((resolve) => {
+      abortResolve = resolve;
+    })
+    : null;
+  const onAbort = () => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    reader.cancel(signal?.reason).catch(() => {});
+    abortResolve?.("aborted");
+  };
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }
+  const cleanupAbort = signal ? () => signal.removeEventListener("abort", onAbort) : null;
+
+  try {
+    if (signal?.aborted) return { hasContent: false, body: null, timedOut: false, aborted: true };
+
+    const readLoop = (async () => {
+      try {
+        for (;;) {
+          if (settled) return "aborted";
+          let readResult;
+          try {
+            readResult = abortPromise
+              ? await Promise.race([reader.read(), abortPromise.then(() => ({ aborted: true }))])
+              : await reader.read();
+          } catch {
+            // Treat a read failure as no content so the combo can try the next model.
+            if (!settled) { settled = true; hasContent = false; }
+            return "error";
+          }
+          if (settled) return "aborted";
+          if (readResult?.aborted || signal?.aborted) { settled = true; return "aborted"; }
+          const { done, value } = readResult;
+          if (done) {
+            upstreamDone = true;
+            // A frame may sit in the tail without a trailing newline.
+            pending += decoder.decode();
+            if (pending.trim() && frameCarriesContent(pending.trim())) hasContent = true;
+            settled = true;
+            return "done";
+          }
+
+          rawChunks.push(value);
+          rawBytes += value.byteLength;
+          pending += decoder.decode(value, { stream: true });
+
+          // Only scan complete lines; a JSON frame split across chunks must not be
+          // judged on its first half.
+          let newline;
+          while ((newline = pending.indexOf("\n")) !== -1) {
+            const line = pending.slice(0, newline).trim();
+            pending = pending.slice(newline + 1);
+            if (frameCarriesContent(line)) { hasContent = true; break; }
+          }
+          if (hasContent) { settled = true; return "content"; }
+
+          // A provider can stream non-content frames at line rate. Without a byte
+          // budget the buffer would grow for the whole timeout window, so stop
+          // buffering and hand the stream over rather than risk the heap. Deciding
+          // in the client's favour: a chatty stream is passed through, not failed.
+          if (rawBytes >= PEEK_MAX_BYTES) {
+            hasContent = true;
+            settled = true;
+            return "budget";
+          }
+        }
+      } catch {
+        // Treat a read failure as no content so the combo can try the next model.
+        if (!settled) { settled = true; hasContent = false; }
+        return "error";
+      }
+    })();
+
+    const timeoutPromise = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        settled = true;
+        reader.cancel().catch(() => {});
+        resolve("timeout");
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+    });
+    const outcome = await Promise.race([readLoop, timeoutPromise]);
+
+    if (outcome === "aborted" || signal?.aborted) {
+      await reader.cancel(signal?.reason).catch(() => {});
+      return { hasContent: false, body: null, timedOut: false, aborted: true };
+    }
+  } finally {
+    settled = true;
+    if (timer) clearTimeout(timer);
+    cleanupAbort?.();
+  }
+
+  if (!hasContent) {
+    await reader.cancel().catch(() => {});
+    return { hasContent: false, body: null, timedOut };
+  }
+
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of rawChunks) controller.enqueue(chunk);
+      rawChunks.length = 0;
+      if (upstreamDone) controller.close();
+    },
+    async pull(controller) {
+      if (upstreamDone) return;
+      try {
+        const { done, value } = await reader.read();
+        if (done) { upstreamDone = true; controller.close(); return; }
+        controller.enqueue(value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      reader.cancel(reason).catch(() => {});
+    }
+  });
+
+  return { hasContent: true, body, timedOut: false };
+}
 
 // Flatten tool turns into prose so panel models keep the context but can't loop
 // on tools: drop the request's tools, turn tool/function results into assistant
@@ -277,7 +535,7 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, signal = null }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -298,16 +556,48 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   let lastStatus = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
+    if (signal?.aborted) {
+      lastError = signal?.reason?.message || "Request aborted";
+      if (!lastStatus) lastStatus = 499;
+      break;
+    }
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
-      
-      // Success (2xx) - return response
+      const result = await handleSingleModel(body, modelStr, { signal });
+      if (signal?.aborted) {
+        await result?.body?.cancel?.(signal?.reason).catch(() => {});
+        lastError = signal?.reason?.message || "Request aborted";
+        if (!lastStatus) lastStatus = 499;
+        break;
+      }
+
+      // Success (2xx) — but a 200 is not proof of a usable answer. A provider can
+      // open an SSE stream, send nothing but keepalives and close cleanly; that
+      // must fall through to the next model rather than be handed to the client.
       if (result.ok) {
-        log.info("COMBO", `Model ${modelStr} succeeded`);
-        return result;
+        const { hasContent, body: replayBody, aborted } = await peekStreamForContent(result, { signal });
+        if (aborted || signal?.aborted) {
+          await replayBody?.cancel?.(signal?.reason).catch(() => {});
+          lastError = signal?.reason?.message || "Request aborted";
+          if (!lastStatus) lastStatus = 499;
+          break;
+        }
+        if (hasContent) {
+          log.info("COMBO", `Model ${modelStr} succeeded`);
+          if (!replayBody) return result;
+          return new Response(replayBody, {
+            status: result.status,
+            statusText: result.statusText,
+            headers: result.headers,
+          });
+        }
+
+        lastError = "provider returned an empty stream";
+        if (!lastStatus) lastStatus = 503;
+        log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`);
+        continue;
       }
 
       // Extract error info from response
