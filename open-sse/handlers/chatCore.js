@@ -1,4 +1,4 @@
-import { detectFormat, getTargetFormat, resolveTransport } from "../services/provider.js";
+import { detectFormat } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
 import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
 import { FORMATS } from "../translator/formats.js";
@@ -6,7 +6,7 @@ import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/for
 import { createStreamController } from "../utils/streamHandler.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
-import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
+import { getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError, clientStatusForUpstream } from "../utils/error.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
@@ -15,6 +15,7 @@ import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { resolveUpstreamRoute } from "./chatCore/upstreamRoute.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
@@ -78,20 +79,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (bypassResponse) return bypassResponse;
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
-  const modelTargetFormat = getModelTargetFormat(alias, model);
-  // Multi-endpoint providers: pick transport matching sourceFormat → zero translation.
-  // Per-model guard: only use the transport when the model declares support for that
-  // sourceFormat — opencode-go models differ in endpoint support (kimi/glm only do
-  // /chat/completions), so without this guard a claude-format request would wrongly
-  // route kimi to /messages.
-  const modelSupportedFormats = getModelSupportedFormats(alias, model);
-  const runtimeTransport = resolveTransport(provider, sourceFormat);
-  // Per-model guard: when a model declares supportedFormats, only use the
-  // Prefer a supported source-format transport for lossless passthrough. A
-  // model target selects fallback endpoint when source format is unsupported.
-  const sourceTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
-  const useTransport = sourceTransport || (modelTargetFormat ? resolveTransport(provider, modelTargetFormat) : null);
-  const targetFormat = useTransport?.format || modelTargetFormat || getTargetFormat(provider, credentials);
+  const { targetFormat, transport: useTransport } = resolveUpstreamRoute({ provider, alias, model, sourceFormat, credentials });
   if (useTransport && credentials) credentials.runtimeTransport = useTransport;
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
