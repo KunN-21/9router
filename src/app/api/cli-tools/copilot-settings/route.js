@@ -132,19 +132,19 @@ export async function DELETE() {
   try {
     const configPath = getConfigPath();
 
-    let config = [];
-    try {
-      const existing = await fs.readFile(configPath, "utf-8");
-      const parsed = JSON.parse(existing);
-      config = Array.isArray(parsed) ? parsed : [];
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        return NextResponse.json({ success: true, message: "No config file to reset" });
-      }
-      throw error;
+    // Same no-clobber rule as POST: a file that exists but cannot be read or
+    // parsed, or that parses to a non-array, must NOT be treated as empty — the
+    // filter below writes the result back, so that would drop every other model
+    // provider the user had configured.
+    const existingConfig = await readExistingConfig(configPath, JSON.parse);
+    if (existingConfig === null) {
+      return NextResponse.json({ success: true, message: "No config file to reset" });
+    }
+    if (!Array.isArray(existingConfig)) {
+      throw new Error(`${configPath} is not a provider array; refusing to overwrite it`);
     }
 
-    config = config.filter((e) => e.name !== "9Router");
+    const config = existingConfig.filter((e) => e.name !== "9Router");
     await fs.writeFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
@@ -153,6 +153,12 @@ export async function DELETE() {
     });
   } catch (error) {
     console.log("Error resetting copilot settings:", error);
-    return NextResponse.json({ error: "Failed to reset copilot settings" }, { status: 500 });
+    // Surface the one failure the user can act on — a config file of theirs that
+    // cannot be parsed — and keep everything else generic.
+    const refusedToClobber = String(error?.message || "").includes("refusing to overwrite it");
+    return NextResponse.json(
+      { error: refusedToClobber ? error.message : "Failed to reset copilot settings" },
+      { status: 500 }
+    );
   }
 }
