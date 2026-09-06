@@ -26,8 +26,6 @@ describe("OpenCode Go model catalog", () => {
       "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
       "mimo-v2.5", "mimo-v2.5-pro",
       "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-      "muse-spark-1.2-contributor",
-      "muse-spark-1.3-contributor",
       "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
       "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
     ]);
@@ -105,5 +103,10 @@ describe("OpenCode Go per-model transport guard (chatCore logic)", () => {
     for (const m of CLAUDE_CAPABLE) {
       expect(pickTransport("opencode-go", "openai-responses", "opencode-go", m)).toBeNull();
     }
+  });
+
+  it("lists each opencode-go model id exactly once (no duplicate registry entries)", () => {
+    const ids = (PROVIDER_MODELS["opencode-go"] || []).map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
@@ -8,7 +7,6 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
-import { resolveSessionId } from "../utils/sessionManager.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -36,18 +34,6 @@ function applyAuth(headers, desc, credentials) {
   if (credentials.apiKey) setAuth(headers, desc.apiKey, credentials.apiKey);
   else if (credentials.accessToken) setAuth(headers, desc.oauth, credentials.accessToken);
   if (desc.anthropicVersion && !headers["anthropic-version"]) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
-}
-
-function openCodeGoSession(body, credentials) {
-  const identity = resolveSessionId({
-    headers: credentials?.rawHeaders || {},
-    body,
-    connectionId: credentials?.connectionId,
-    scope: "opencode-go",
-  });
-  if (!identity) return null;
-  const hash = crypto.createHash("sha256").update(String(identity)).digest("hex").slice(0, 32);
-  return `ses_${hash}`;
 }
 
 // Provider-specific header quirks kept as small hooks (not pure auth).
@@ -83,9 +69,6 @@ export class DefaultExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     const transformed = this.applyJsonSchemaFallback(body);
-    if (this.provider === "opencode-go" && credentials) {
-      credentials._ocgSession = openCodeGoSession(body, credentials);
-    }
 
     if (transformed && typeof transformed === "object") {
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
@@ -207,10 +190,6 @@ export class DefaultExecutor extends BaseExecutor {
       || (this.provider?.startsWith?.("anthropic-compatible-") && isClaudeModel))) {
       headers["Anthropic-Beta"] = selectAnthropicBeta(model);
     }
-    if (this.provider === "opencode-go") {
-      headers["x-opencode-session"] = credentials?._ocgSession || openCodeGoSession(null, credentials);
-    }
-
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
