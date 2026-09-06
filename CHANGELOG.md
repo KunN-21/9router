@@ -1,3 +1,12 @@
+# v0.5.59-local.5 (2026-09-06)
+
+PR #3832 integration (cherry-pick 14e9a873 onto local master eac16c541):
+- **Codex**: Chat/Claude translated tools with omitted strict default to false
+  so Responses does not auto-normalize optional fields to required; native
+  flatten preserves explicit strict and leaves omitted absent.
+- Test adapted to local master: normalizeToolChoice keeps named tool_choice
+  as Responses-native shape (PR parent dropped it).
+
 # v0.5.59-local.4 (2026-09-05)
 
 Batch-1 upstream integration (13 gates on fork master 0.5.59-local.3):
