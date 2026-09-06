@@ -2,7 +2,6 @@
 
 Ports #3813 (sequential background refresh, bounded env config, lazy projectId)
 + #3767 (Antigravity weekly quota) with floor-before-validation hardening.
-No push/master update; parent handles after artifact verification.
 
 # v0.5.59-local.5 (2026-09-06)
 
