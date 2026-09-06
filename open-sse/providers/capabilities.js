@@ -132,8 +132,8 @@ export const MODEL_CAPABILITIES = {
   "muse-spark-1.2-contributor-free": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1048576, maxOutput: 131072 },
   "muse-spark-1.3-contributor-free": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1048576, maxOutput: 131072 },
   // OpenCode Go Muse Spark 1.3 — same Responses reasoning (minimal..xhigh, cannot
-  // disable); no modality flags in this PR.
-  "muse-spark-1.3-contributor": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+  // disable) and multimodal vision as the Free variants (models.dev meta/muse-spark).
+  "muse-spark-1.3-contributor": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
 };
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
