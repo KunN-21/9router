@@ -1,122 +1,166 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const { fetchMock } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+}));
+
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch: fetchMock,
+}));
+
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
-import { OpenCodeExecutor } from "../../open-sse/executors/opencode.js";
+import { getExecutor } from "../../open-sse/executors/index.js";
 
 const TRANSPORTS = [
-  { format: "openai", baseUrl: "https://opencode.ai/zen/go/v1/chat/completions" },
-  { format: "claude", baseUrl: "https://opencode.ai/zen/go/v1/messages" },
-  { format: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1/responses" },
+  { format: "openai", baseUrl: "https://opencode.ai/zen/go/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+  { format: "claude", baseUrl: "https://opencode.ai/zen/go/v1/messages", auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true } },
+  { format: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
 ];
 
-function request(executor, {
-  session = "conversation-a",
-  connectionId = "connection-a",
-  transport = TRANSPORTS[0],
-  rawHeaders = { "x-session-id": session },
-} = {}) {
-  const credentials = { apiKey: "test-key", connectionId, rawHeaders, runtimeTransport: transport };
-  executor.transformRequest(
-    "muse-spark-1.3-contributor",
-    { messages: [{ role: "user", content: "hello" }] },
-    true,
-    credentials,
-  );
-  return { credentials, headers: executor.buildHeaders(credentials, true) };
+function makeCredentials(overrides = {}) {
+  return {
+    apiKey: "test-key",
+    connectionId: "connection-a",
+    rawHeaders: {},
+    runtimeTransport: TRANSPORTS[0],
+    ...overrides,
+  };
 }
 
+function prepare(executor, overrides = {}) {
+  const credentials = overrides.credentials || makeCredentials();
+  const prepared = executor.prepareRequestCredentials({
+    body: overrides.body || { messages: [{ role: "user", content: "hello" }] },
+    credentials,
+    providerSessionId: overrides.providerSessionId ?? "conversation-a",
+    clientTool: overrides.clientTool ?? "claude",
+  });
+  return { credentials, prepared };
+}
+
+beforeEach(() => {
+  fetchMock.mockReset();
+  fetchMock.mockResolvedValue(new Response("{}", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  }));
+});
+
 describe("OpenCode Go x-opencode-session", () => {
-  it("sends the same opaque session on Chat, Messages, and Responses transports", () => {
-    const executor = new DefaultExecutor("opencode-go");
-    const values = TRANSPORTS.map((transport) => request(executor, { transport }).headers["x-opencode-session"]);
+  it("uses a dedicated executor with request-local session credentials", () => {
+    const executor = getExecutor("opencode-go");
+    const { credentials, prepared } = prepare(executor);
+
+    expect(executor.constructor.name).toBe("OpenCodeGoExecutor");
+    expect(prepared).not.toBe(credentials);
+    expect(prepared._opencodeGoSession).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(credentials).not.toHaveProperty("_opencodeGoSession");
+    expect(executor).not.toHaveProperty("_currentSessionId");
+    expect(executor).not.toHaveProperty("_opencodeGoSession");
+  });
+
+  it("preserves a valid native session header case-insensitively", () => {
+    const executor = getExecutor("opencode-go");
+    const { prepared } = prepare(executor, {
+      credentials: makeCredentials({ rawHeaders: { "X-OpenCode-Session": " native-session-a " } }),
+    });
+
+    expect(prepared._opencodeGoSession).toBe("native-session-a");
+  });
+
+  it("ignores an oversized native session and uses the translated identity", () => {
+    const executor = getExecutor("opencode-go");
+    const { prepared } = prepare(executor, {
+      credentials: makeCredentials({ rawHeaders: { "x-opencode-session": "x".repeat(257) } }),
+    });
+
+    expect(prepared._opencodeGoSession).toMatch(/^ses_[0-9a-f]{32}$/);
+  });
+
+  it("keeps the same translated conversation stable across all transports", () => {
+    const executor = getExecutor("opencode-go");
+    const values = TRANSPORTS.map((runtimeTransport) => {
+      const { prepared } = prepare(executor, {
+        credentials: makeCredentials({ runtimeTransport }),
+      });
+      return executor.buildHeaders(prepared, true)["x-opencode-session"];
+    });
+
     expect(new Set(values).size).toBe(1);
     expect(values[0]).toMatch(/^ses_[0-9a-f]{32}$/);
     expect(values[0]).not.toContain("conversation-a");
   });
 
-  it("keeps one explicit conversation stable and separates different conversations", () => {
-    const executor = new DefaultExecutor("opencode-go");
-    const a1 = request(executor, { session: "conversation-a" }).headers["x-opencode-session"];
-    const a2 = request(executor, { session: "conversation-a" }).headers["x-opencode-session"];
-    const b = request(executor, { session: "conversation-b" }).headers["x-opencode-session"];
-    expect(a1).toBe(a2);
-    expect(a1).not.toBe(b);
+  it("isolates different conversations", () => {
+    const executor = getExecutor("opencode-go");
+    const a = prepare(executor, { providerSessionId: "conversation-a" }).prepared._opencodeGoSession;
+    const b = prepare(executor, { providerSessionId: "conversation-b" }).prepared._opencodeGoSession;
+
+    expect(a).not.toBe(b);
   });
 
-  it("ignores inbound x-opencode-session (caller cannot influence provider-owned output)", () => {
-    const executor = new DefaultExecutor("opencode-go");
-    const body = { messages: [{ role: "user", content: "hello" }] };
-    const connectionId = "conn-ignore-x-header";
-    const baseHeaders = { "x-session-id": "conversation-a" };
-    const injectedHeaders = { "x-session-id": "conversation-a", "x-opencode-session": "caller-controlled-session", "X-OpenCode-Session": "ATTACKER" };
-    // baseline: without injected header
-    const baseCreds = { apiKey: "test-key", connectionId, rawHeaders: baseHeaders, runtimeTransport: TRANSPORTS[0] };
-    executor.transformRequest("muse-spark-1.3-contributor", body, true, baseCreds);
-    const baseline = executor.buildHeaders(baseCreds, true)["x-opencode-session"];
-    // with injected header: must produce same provider-owned output
-    const injectedCreds = { apiKey: "test-key", connectionId, rawHeaders: injectedHeaders, runtimeTransport: TRANSPORTS[0] };
-    executor.transformRequest("muse-spark-1.3-contributor", body, true, injectedCreds);
-    const withInjected = executor.buildHeaders(injectedCreds, true)["x-opencode-session"];
-    expect(baseline).toMatch(/^ses_[0-9a-f]{32}$/);
-    expect(withInjected).toBe(baseline);
-    expect(withInjected).not.toContain("caller-controlled-session");
-    expect(withInjected).not.toContain("ATTACKER");
-    // also case-insensitive variant alone must be ignored
-    const lowerCreds = { apiKey: "test-key", connectionId, rawHeaders: { "x-session-id": "conversation-a", "X-OPENCODE-SESSION": "lowercase-attack" }, runtimeTransport: TRANSPORTS[0] };
-    executor.transformRequest("muse-spark-1.3-contributor", body, true, lowerCreds);
-    expect(executor.buildHeaders(lowerCreds, true)["x-opencode-session"]).toBe(baseline);
+  it("isolates different downstream agents that reuse the same raw id", () => {
+    const executor = getExecutor("opencode-go");
+    const claude = prepare(executor, { clientTool: "claude" }).prepared._opencodeGoSession;
+    const codex = prepare(executor, { clientTool: "codex" }).prepared._opencodeGoSession;
+
+    expect(claude).not.toBe(codex);
   });
 
-  it("ignores _clientSessionId (target-format scoped, violates provider isolation)", () => {
-    const executor = new DefaultExecutor("opencode-go");
-    const body = { messages: [{ role: "user", content: "hello" }] };
-    const connectionId = "conn-ignore-client-session";
-    const rawHeaders = { "x-session-id": "conversation-a" };
-    const baseCreds = { apiKey: "test-key", connectionId, rawHeaders, runtimeTransport: TRANSPORTS[0] };
-    executor.transformRequest("muse-spark-1.3-contributor", body, true, baseCreds);
-    const baseline = executor.buildHeaders(baseCreds, true)["x-opencode-session"];
-    // same connection/body but with target-format scoped _clientSessionId
-    const poisonedCreds = { apiKey: "test-key", connectionId, rawHeaders, runtimeTransport: TRANSPORTS[0], _clientSessionId: "format-scoped-session-leak" };
-    executor.transformRequest("muse-spark-1.3-contributor", body, true, poisonedCreds);
-    const poisoned = executor.buildHeaders(poisonedCreds, true)["x-opencode-session"];
-    expect(baseline).toMatch(/^ses_[0-9a-f]{32}$/);
-    expect(poisoned).toBe(baseline);
-    expect(poisoned).not.toContain("format-scoped-session-leak");
-  });
+  it("uses a stable opaque connection fallback when no session is supplied", () => {
+    const executor = getExecutor("opencode-go");
+    const options = {
+      credentials: makeCredentials({ connectionId: "fallback-connection" }),
+      providerSessionId: null,
+      clientTool: null,
+      body: { messages: [{ role: "user", content: "headerless" }] },
+    };
+    const first = prepare(executor, options).prepared._opencodeGoSession;
+    const second = prepare(executor, options).prepared._opencodeGoSession;
 
-  it("uses a stable opaque per-connection fallback when the client has no session", () => {
-    const executor = new DefaultExecutor("opencode-go");
-    const first = request(executor, { rawHeaders: {}, connectionId: "connection-fallback" }).headers["x-opencode-session"];
-    const second = request(executor, { rawHeaders: {}, connectionId: "connection-fallback" }).headers["x-opencode-session"];
     expect(first).toBe(second);
     expect(first).toMatch(/^ses_[0-9a-f]{32}$/);
-    expect(first).not.toContain("connection-fallback");
+    expect(first).not.toContain("fallback-connection");
   });
 
-  it("keeps session state on request credentials without singleton bleed", () => {
-    const executor = new DefaultExecutor("opencode-go");
-    const a = request(executor, { session: "conversation-a" });
-    const b = request(executor, { session: "conversation-b" });
-    expect(executor.buildHeaders(a.credentials, true)["x-opencode-session"]).toBe(a.headers["x-opencode-session"]);
-    expect(a.headers["x-opencode-session"]).not.toBe(b.headers["x-opencode-session"]);
-  });
-
-  it("does not add the header to another DefaultExecutor provider", () => {
-    expect(request(new DefaultExecutor("openai")).headers["x-opencode-session"]).toBeUndefined();
-  });
-
-  it("leaves OpenCode Free specialized session behavior intact", () => {
-    const executor = new OpenCodeExecutor();
-    const credentials = { rawHeaders: { "x-session-id": "free-conversation" }, connectionId: "free" };
-    executor.transformRequest(
-      "muse-spark-1.3-contributor-free",
-      { input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }] },
-      true,
+  it("adds the prepared session to the actual fetch headers", async () => {
+    const executor = getExecutor("opencode-go");
+    const credentials = makeCredentials();
+    const result = await executor.execute({
+      model: "glm-5.2",
+      body: { messages: [{ role: "user", content: "hello" }] },
+      stream: false,
       credentials,
+      providerSessionId: "conversation-fetch",
+      clientTool: "codex",
+    });
+
+    expect(result.headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].headers["x-opencode-session"]).toBe(result.headers["x-opencode-session"]);
+    expect(credentials).not.toHaveProperty("_opencodeGoSession");
+  });
+
+  it("does not add the header to unrelated default executors", () => {
+    const headers = new DefaultExecutor("openai").buildHeaders({ apiKey: "test-key" }, false);
+    expect(headers["x-opencode-session"]).toBeUndefined();
+  });
+});
+
+describe("chatCore provider session forwarding", () => {
+  it("passes the original provider session and client tool on initial and retry execution", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../../open-sse/handlers/chatCore.js", import.meta.url)),
+      "utf8",
     );
-    const header = executor.buildHeaders(credentials)["x-opencode-session"];
-    // Upstream Free executor forwards the inbound session id verbatim-ish
-    // (lower["x-opencode-session"] || derived) — not an opaque hash.
-    expect(typeof header).toBe("string");
-    expect(header.length).toBeGreaterThan(0);
+    const calls = [...source.matchAll(/executor\.execute\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).toMatch(/providerSessionId:\s*sessionSeed/);
+      expect(call).toMatch(/\bclientTool\b/);
+    }
   });
 });
