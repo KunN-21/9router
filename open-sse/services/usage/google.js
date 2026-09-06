@@ -1,3 +1,4 @@
+import { fetchAndParseAntigravityWeeklyQuotas } from "./antigravityWeeklyQuota.js";
 /**
  * Google usage handlers (Gemini CLI + Antigravity)
  */
@@ -154,7 +155,12 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
       throw new Error(`Antigravity API error: ${response.status}`);
     }
 
-    const data = await response.json();
+    const [data, weeklyQuotas] = await Promise.all([
+      response.json(),
+      projectId
+        ? fetchAndParseAntigravityWeeklyQuotas(accessToken, projectId, proxyOptions)
+        : Promise.resolve({}),
+    ]);
     const quotas = {};
 
     // Parse model quotas (inspired by vscode-antigravity-cockpit)
@@ -211,7 +217,10 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
 
     return {
       plan: subscriptionInfo?.currentTier?.name || "Unknown",
-      quotas,
+      quotas: {
+        ...quotas,
+        ...weeklyQuotas,
+      },
       subscriptionInfo,
     };
   } catch (error) {

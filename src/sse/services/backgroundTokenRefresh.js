@@ -9,6 +9,13 @@ import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.
 export const BACKGROUND_REFRESH_LEAD_MS = 30 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const INITIAL_DELAY_MS = 10 * 1000;
+const SENSITIVE_PROVIDERS = new Set(["antigravity", "gemini-cli"]);
+
+function finitePositiveEnv(name, fallback, cap = Number.POSITIVE_INFINITY) {
+  const v = Math.floor(Number(process.env[name]));
+  if (!Number.isFinite(v) || v <= 0) return fallback;
+  return Math.min(v, cap);
+}
 
 let started = false;
 let intervalHandle = null;
@@ -95,6 +102,7 @@ export async function runBackgroundTokenRefreshTick(deps = {}) {
   try {
     const load = deps.loadConnections || loadActiveConnections;
     const refresh = deps.refreshConnection || refreshOne;
+    const sleep = deps.sleep || ((ms) => new Promise((res) => setTimeout(res, ms)));
 
     const connections = await load();
     const due = selectConnectionsNeedingRefresh(connections, Date.now());
@@ -111,23 +119,33 @@ export async function runBackgroundTokenRefreshTick(deps = {}) {
       ids: due.map((c) => c.id).filter(Boolean),
     });
 
-    await Promise.allSettled(
-      due.map(async (conn) => {
-        try {
-          await refresh(conn);
-          log.info("BG_TOKEN_REFRESH", "Connection refresh finished", {
-            id: conn.id,
-            provider: conn.provider,
-          });
-        } catch (err) {
-          log.warn("BG_TOKEN_REFRESH", "Connection refresh failed (swallowed)", {
-            id: conn?.id,
-            provider: conn?.provider,
-            error: err?.message ?? String(err),
-          });
-        }
-      })
-    );
+    const baseSensitiveDelay = finitePositiveEnv("BG_REFRESH_GOOGLE_DELAY_MS", 12_000, 60_000);
+    const baseNormalDelay = finitePositiveEnv("BG_REFRESH_DELAY_MS", 1_500, 30_000);
+
+    for (let i = 0; i < due.length; i++) {
+      const conn = due[i];
+      try {
+        await refresh(conn);
+        log.info("BG_TOKEN_REFRESH", "Connection refresh finished", {
+          id: conn.id,
+          provider: conn.provider,
+        });
+      } catch (err) {
+        log.warn("BG_TOKEN_REFRESH", "Connection refresh failed (swallowed)", {
+          id: conn?.id,
+          provider: conn?.provider,
+          error: err?.message ?? String(err),
+        });
+      }
+
+      // Sequential delay between accounts to prevent bursting upstream providers (especially Google Cloud)
+      if (i < due.length - 1) {
+        const isSensitive = SENSITIVE_PROVIDERS.has(conn.provider);
+        const baseDelay = isSensitive ? baseSensitiveDelay : baseNormalDelay;
+        const jitter = isSensitive ? Math.floor(Math.random() * 4000) : 200;
+        await sleep(baseDelay + jitter);
+      }
+    }
   } catch (err) {
     log.warn("BG_TOKEN_REFRESH", "Tick failed (swallowed)", {
       error: err?.message ?? String(err),
