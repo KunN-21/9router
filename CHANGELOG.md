@@ -1,3 +1,9 @@
+# v0.5.59-local.6 (2026-09-06)
+
+Ports #3813 (sequential background refresh, bounded env config, lazy projectId)
++ #3767 (Antigravity weekly quota) with floor-before-validation hardening.
+No push/master update; parent handles after artifact verification.
+
 # v0.5.59-local.5 (2026-09-06)
 
 PR #3832 integration (cherry-pick 14e9a873 onto local master eac16c541):
