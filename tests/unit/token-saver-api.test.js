@@ -122,6 +122,25 @@ describe("GET /api/token-saver/stats", () => {
     expect(spy).toHaveBeenCalled();
   });
 
+  it.each([
+    ["", 30, 100, 1],
+    ["?timelineDays=0&recentLimit=0", 1, 0, 0],
+  ])("preserves defaults or explicit zero for query %s", async (query, timelineDays, recentLimit, recentCount) => {
+    process.env.DATA_DIR = TMP;
+    vi.resetModules();
+    const eventsMod = await import("@/lib/tokenSaver/events.js");
+    eventsMod.__setTokenSaverEventsDirForTest(TMP);
+    eventsMod.appendTokenSaverEvent({ saver: "rtk", applied: true, charsSaved: 25 });
+    const pxpipeEvents = await import("@/lib/pxpipe/events.js");
+    const spy = vi.spyOn(pxpipeEvents, "getPxpipeStats");
+    const { GET } = await import("@/app/api/token-saver/stats/route.js");
+    const res = await GET(makeReq(query));
+    const data = await res.json();
+    expect(data.timeline).toHaveLength(timelineDays);
+    expect(data.recent).toHaveLength(recentCount);
+    expect(spy).toHaveBeenCalledWith({ timelineDays, recentLimit });
+  });
+
   it("clamps query params (recentLimit/timelineDays/sinceMs)", async () => {
     process.env.DATA_DIR = TMP;
     vi.resetModules();

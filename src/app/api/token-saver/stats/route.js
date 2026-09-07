@@ -12,10 +12,10 @@ export async function GET(request) {
     const rawRecent = searchParams.get("recentLimit");
 
     const sinceMs = rawSince !== null && Number.isFinite(Number(rawSince)) ? Number(rawSince) : undefined;
-    const timelineDays = Number.isFinite(Number(rawTimeline))
+    const timelineDays = rawTimeline !== null && Number.isFinite(Number(rawTimeline))
       ? Math.min(Math.max(Math.round(Number(rawTimeline)), 1), 90)
       : undefined;
-    const recentLimit = Number.isFinite(Number(rawRecent))
+    const recentLimit = rawRecent !== null && Number.isFinite(Number(rawRecent))
       ? Math.min(Math.max(Math.round(Number(rawRecent)), 0), 500)
       : undefined;
 
