@@ -381,6 +381,127 @@ describe("Claude direct path (no OpenAI pivot)", () => {
     expect(JSON.stringify(body)).toBe(before);
     expect(fetchSpy).toHaveBeenCalledTimes(1); // no second attempt via OpenAI pivot
   });
+
+  it("mutated tool_use identity (id/name/input) → null, body untouched", async () => {
+    const long = "original payload text that is fairly long ".repeat(40);
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "tEVIL", name: "write_file", input: { p: "/etc/passwd" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }] },
+      ],
+      tokens_before: 5000, tokens_after: 10, tokens_saved: 4990,
+    }), { status: 200 }));
+    const body = {
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: { p: "a" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: long }] },
+      ],
+    };
+    const before = JSON.stringify(body);
+    const diag = {};
+    const stats = await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", model: "m", format: "claude", diagnostics: diag,
+    });
+    expect(stats).toBeNull();
+    expect(JSON.stringify(body)).toBe(before);
+    expect(diag.reason).toMatch(/shape/i);
+  });
+
+  it("mutated tool_result tool_use_id → null, body untouched", async () => {
+    const long = "original payload text that is fairly long ".repeat(40);
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "f", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "tHIJACK", content: "x" }] },
+      ],
+      tokens_before: 5000, tokens_after: 10, tokens_saved: 4990,
+    }), { status: 200 }));
+    const body = {
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "f", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: long }] },
+      ],
+    };
+    const before = JSON.stringify(body);
+    const diag = {};
+    const stats = await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", model: "m", format: "claude", diagnostics: diag,
+    });
+    expect(stats).toBeNull();
+    expect(JSON.stringify(body)).toBe(before);
+    expect(diag.reason).toMatch(/shape/i);
+  });
+
+  it("non-text block replaced by string / block dropped → null, body untouched", async () => {
+    const long = "original payload text that is fairly long ".repeat(40);
+    // Image → string swap.
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      messages: [{ role: "user", content: "x" }],
+      tokens_before: 5000, tokens_after: 10, tokens_saved: 4990,
+    }), { status: 200 }));
+    const imgBody = {
+      messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(2000) } }] }],
+    };
+    const imgBefore = JSON.stringify(imgBody);
+    expect(await compressWithHeadroom(imgBody, {
+      enabled: true, url: "http://localhost:8787", model: "m", format: "claude", diagnostics: {},
+    })).toBeNull();
+    expect(JSON.stringify(imgBody)).toBe(imgBefore);
+
+    // Dropped block inside a message (same message count, fewer blocks).
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "x" }] }],
+      tokens_before: 5000, tokens_after: 10, tokens_saved: 4990,
+    }), { status: 200 }));
+    const dropBody = {
+      messages: [{ role: "assistant", content: [{ type: "text", text: long }, { type: "tool_use", id: "t1", name: "f", input: {} }] }],
+    };
+    const dropBefore = JSON.stringify(dropBody);
+    expect(await compressWithHeadroom(dropBody, {
+      enabled: true, url: "http://localhost:8787", model: "m", format: "claude", diagnostics: {},
+    })).toBeNull();
+    expect(JSON.stringify(dropBody)).toBe(dropBefore);
+  });
+
+  it("stripped thinking signature → null, body untouched", async () => {
+    const long = "original payload text that is fairly long ".repeat(40);
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "x" }] }],
+      tokens_before: 5000, tokens_after: 10, tokens_saved: 4990,
+    }), { status: 200 }));
+    const body = {
+      messages: [{ role: "assistant", content: [{ type: "thinking", thinking: long, signature: "sig-abc-123" }] }],
+    };
+    const before = JSON.stringify(body);
+    expect(await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", model: "m", format: "claude", diagnostics: {},
+    })).toBeNull();
+    expect(JSON.stringify(body)).toBe(before);
+  });
+
+  it("tool_result text compression still commits (identity kept)", async () => {
+    const tools = [{ name: "read_file", input_schema: { type: "object" } }];
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "compressed ok" }] },
+      ],
+      tokens_before: 500, tokens_after: 100, tokens_saved: 400,
+    }), { status: 200 }));
+    const body = {
+      tools,
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "very long original output ".repeat(20) }] },
+      ],
+    };
+    const stats = await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", model: "claude-x", format: "claude", diagnostics: {},
+    });
+    expect(stats).not.toBeNull();
+    expect(body.tools).toEqual(tools);
+    expect(body.messages[1].content[0].content).toBe("compressed ok");
+  });
 });
 
 describe("no-gain / phantom / conflicting metrics guard", () => {

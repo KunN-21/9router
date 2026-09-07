@@ -56,6 +56,86 @@ function setDiagnostic(diagnostics, reason) {
   if (diagnostics && !diagnostics.reason) diagnostics.reason = sanitizeReason(reason);
 }
 
+// Claude block identity: non-text blocks route history (tool ids, binaries,
+// signatures). Only text/tool_result text may shrink; everything else must round-trip.
+function claudeToolResultContentKept(srcContent, candContent) {
+  if (typeof srcContent === "string") return typeof candContent === "string";
+  if (!Array.isArray(srcContent)) return JSON.stringify(candContent) === JSON.stringify(srcContent);
+  if (!Array.isArray(candContent) || candContent.length !== srcContent.length) return false;
+  for (let k = 0; k < srcContent.length; k++) {
+    if (!claudeBlockIdentityKept(srcContent[k], candContent[k])) return false;
+  }
+  return true;
+}
+
+function claudeBlockIdentityKept(src, cand) {
+  if (!src || !cand || typeof src !== "object" || typeof cand !== "object") {
+    return JSON.stringify(cand) === JSON.stringify(src);
+  }
+  if (cand.type !== src.type) return false;
+  switch (src.type) {
+    case "text":
+      return typeof cand.text === "string";
+    case "tool_use":
+      // input is call arguments — rewriting it retargets the call.
+      return cand.id === src.id && cand.name === src.name
+        && JSON.stringify(cand.input) === JSON.stringify(src.input);
+    case "tool_result":
+      if (String(cand.tool_use_id ?? "") !== String(src.tool_use_id ?? "")) return false;
+      if (Boolean(cand.is_error) !== Boolean(src.is_error)) return false;
+      return claudeToolResultContentKept(src.content, cand.content);
+    case "thinking":
+    case "redacted_thinking":
+      // Signature binds content; any rewrite invalidates it downstream — exact.
+      // cache_control is a local routing hint, not identity.
+      for (const key of new Set([...Object.keys(src), ...Object.keys(cand)])) {
+        if (key === "cache_control") continue;
+        if (JSON.stringify(cand[key]) !== JSON.stringify(src[key])) return false;
+      }
+      return true;
+    case "image":
+    case "document":
+      return JSON.stringify(cand.source) === JSON.stringify(src.source);
+    default:
+      return JSON.stringify(cand) === JSON.stringify(src);
+  }
+}
+
+// Claude shape structural guard: same count, ordered role, same block count/types
+// per message, plus block identity above. Reject instead of fixup.
+function validateClaudeMessageShape(sourceMessages, candidateMessages, diagnostics) {
+  if (!Array.isArray(candidateMessages) || candidateMessages.length !== sourceMessages.length) {
+    setDiagnostic(diagnostics, "proxy response did not preserve Claude message count");
+    return false;
+  }
+  for (let i = 0; i < sourceMessages.length; i++) {
+    const src = sourceMessages[i] || {};
+    const cand = candidateMessages[i] || {};
+    if (cand.role !== src.role) {
+      setDiagnostic(diagnostics, "proxy response did not preserve Claude message shape");
+      return false;
+    }
+    if (typeof src.content === "string") {
+      if (typeof cand.content !== "string") {
+        setDiagnostic(diagnostics, "proxy response did not preserve Claude message shape");
+        return false;
+      }
+      continue;
+    }
+    if (!Array.isArray(src.content) || !Array.isArray(cand.content) || cand.content.length !== src.content.length) {
+      setDiagnostic(diagnostics, "proxy response did not preserve Claude message shape");
+      return false;
+    }
+    for (let j = 0; j < src.content.length; j++) {
+      if (!claudeBlockIdentityKept(src.content[j], cand.content[j])) {
+        setDiagnostic(diagnostics, "proxy response did not preserve Claude message shape");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 // OpenAI shape structural guard: same count, ordered role, valid content shape,
 // and tool-pairing identity preserved (tool_call_id + assistant tool_calls).
 // Any fixup (e.g. reindexing tool_call_id) is dangerous — reject instead.
@@ -467,21 +547,9 @@ export async function compressWithHeadroom(body, { enabled, url, model, format, 
       }
       const data = await callCompress(url, sourceMessages, model, timeoutMs, compressUserMessages, diagnostics || {});
       if (!data) return null;
-      // Validate response preserves identity (count + ordered roles) before commit.
+      // Validate response preserves identity (count + ordered roles + block identity) before commit.
       const compressed = data.messages;
-      if (!Array.isArray(compressed) || compressed.length !== sourceMessages.length) {
-        setDiagnostic(diagnostics, "proxy response did not preserve Claude message count");
-        return null;
-      }
-      for (let i = 0; i < compressed.length; i++) {
-        const expected = sourceMessages[i]?.role;
-        const actual = compressed[i]?.role;
-        const shaped = typeof compressed[i]?.content === "string" || Array.isArray(compressed[i]?.content);
-        if (actual !== expected || !shaped) {
-          setDiagnostic(diagnostics, "proxy response did not preserve Claude message shape");
-          return null;
-        }
-      }
+      if (!validateClaudeMessageShape(sourceMessages, compressed, diagnostics)) return null;
       // Byte-gain guard — candidate bytes compared to before snapshot.
       const candidateBytes = jsonBytes({ ...body, messages: compressed });
       const beforeBytes = diagnostics?.before?.bodyBytes ?? jsonBytes(body);
