@@ -145,7 +145,7 @@ export const MODEL_CAPABILITIES = {
   // Muse Spark 1.3 (Zen free + Go): models.dev lists reasoning_options
   // minimal..xhigh only — "none" 400s, so thinking cannot be disabled.
   "muse-spark-1.3-contributor-free": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
-  "muse-spark-1.3-contributor": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+  "muse-spark-1.3-contributor": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
 };
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };

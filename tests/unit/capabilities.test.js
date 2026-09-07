@@ -25,7 +25,7 @@ describe("Muse Spark 1.3 exact capabilities", () => {
   });
 
   it("declares the same exact 1.3 capabilities for the OpenCode Go id", () => {
-    expect(getCapabilitiesForModel("opencode-go", MUSE_13_GO)).toMatchObject(EXACT_13);
+    expect(getCapabilitiesForModel("opencode-go", MUSE_13_GO)).toMatchObject({ ...EXACT_13, vision: true });
   });
 
   it("keeps the retained 1.2 free id at its existing exact capabilities", () => {
