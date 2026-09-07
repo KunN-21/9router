@@ -162,7 +162,7 @@ async function proxy(request, { params }) {
 
     const loc = headers.get("location");
     if (loc) {
-      const rewritten = rewriteLocation(loc, base);
+      const rewritten = rewriteLocation(loc, target);
       if (rewritten !== loc) headers.set("location", rewritten);
     }
 

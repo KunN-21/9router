@@ -267,6 +267,21 @@ describe("proxy handler", () => {
     }
   });
 
+  it.each([
+    ["login", "/dashboard/login"],
+    ["?page=2", "/dashboard/?page=2"],
+  ])("resolves Location %s against the upstream request URL", async (location, expected) => {
+    global.fetch = vi.fn(async () =>
+      new Response(null, { status: 302, headers: { location } })
+    );
+    const res = await callGet(
+      makeRequest("http://app.local/api/headroom/proxy/dashboard/?page=1"),
+      ["dashboard", ""]
+    );
+    expect(String(global.fetch.mock.calls[0][0])).toBe("http://localhost:8787/dashboard/?page=1");
+    expect(res.headers.get("location")).toBe(`${DASHBOARD_PREFIX}${expected}`);
+  });
+
   it("strips viewer cookies/authorization upstream and injects HEADROOM_API_KEY Bearer", async () => {
     let seen;
     global.fetch = vi.fn(async (target, init) => {
