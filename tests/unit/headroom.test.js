@@ -2,8 +2,13 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { compressWithHeadroom, formatHeadroomLog, formatHeadroomSizeLog } from "../../open-sse/rtk/headroom.js";
 import { parseHeadroomTimeoutMs } from "../../src/lib/headroom/detect.js";
 
+const origFetch = globalThis.fetch;
+
 afterEach(() => {
   vi.restoreAllMocks();
+  // Direct `global.fetch = vi.fn()` assignments survive restoreAllMocks and
+  // carry call history into the next spyOn (vitest 4: fetch called 2x). Reset.
+  globalThis.fetch = origFetch;
   delete process.env.HEADROOM_API_KEY;
   delete process.env.HEADROOM_PROXY_TOKEN;
 });
