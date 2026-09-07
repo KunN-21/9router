@@ -12,7 +12,7 @@ import { createErrorResult, parseUpstreamError, formatProviderError, clientStatu
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { handlePonytailCommands, DEFAULT_PONYTAIL_HELP } from "../utils/tokenSaverBridge.js";
-import { trackPendingRequest, appendRequestLog, saveRequestDetail, getUsageStats } from "@/lib/usageDb.js";
+import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
@@ -78,9 +78,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const acceptHeader = clientRawRequest?.headers?.accept || "";
   const clientPrefersJson = acceptHeader.includes("application/json");
   const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  const ponytailStream = body.stream === true ? true : !(clientPrefersJson && !clientPrefersSSE);
-  const ponytailResponse = await handlePonytailCommands(body, model, {
-    fetchStats: () => getUsageStats("all"),
+  // Explicit stream:false wins before Accept sniffing; absent stream defaults to
+  // non-streaming for slash-command replies (no cross-key stats loading).
+  const ponytailStream = body.stream === true;
+  const ponytailResponse = handlePonytailCommands(body, model, {
     helpText: DEFAULT_PONYTAIL_HELP,
     sourceFormatOverride: sourceFormat,
     streamOverride: ponytailStream,

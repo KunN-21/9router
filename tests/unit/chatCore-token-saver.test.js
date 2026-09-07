@@ -42,10 +42,13 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
   }),
 }));
 
-vi.mock("../../open-sse/utils/stream.js", () => ({
-  COLORS: { red: "", reset: "" },
-  createPassthroughStreamWithLogger: vi.fn(() => new TransformStream()),
-}));
+vi.mock("../../open-sse/utils/stream.js", async (orig) => {
+  const actual = await orig();
+  return {
+    ...actual,
+    createPassthroughStreamWithLogger: vi.fn(() => new TransformStream()),
+  };
+});
 
 vi.mock("../../open-sse/rtk/index.js", async (orig) => {
   const actual = await orig();
@@ -107,6 +110,18 @@ vi.mock("@/lib/tokenSaver/events.js", async () => {
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 
 describe("chatCore tokenSaver", () => {
+  it.each(["/ponytail-help", "/ponytail-gain"])("honors stream:false for %s without exposing usage", async (command) => {
+    vi.clearAllMocks();
+    const result = await handleChatCore({
+      body: { stream: false, messages: [{ role: "user", content: command }] },
+      modelInfo: { provider: "openai", model: "gpt-4o" },
+      credentials: {}, clientRawRequest: { headers: {} },
+    });
+    expect(result.response.headers.get("content-type")).toContain("application/json");
+    const text = JSON.stringify(await result.response.json());
+    if (command === "/ponytail-gain") expect(text).toMatch(/dashboard/i);
+    expect(mocks.executeMock).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     // fresh Response per call: a consumed ReadableStream cannot be reused

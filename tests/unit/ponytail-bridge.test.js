@@ -45,16 +45,35 @@ describe("handlePonytailCommands", () => {
     expect(result.kind).toBe("json");
   });
 
-  it("falls back to detectFormat/body.stream when overrides absent", async () => {
+  it.each(["assistant", "tool"])("does not replay historical commands after %s", async (role) => {
+    const result = await handlePonytailCommands({ messages: [
+      { role: "user", content: "/ponytail-help" },
+      { role, content: "continue" },
+    ] }, "demo-model");
+    expect(result).toBeNull();
+  });
+
+  it("does not load global usage for gain", () => {
+    const result = handlePonytailCommands({ stream: false, messages: [{ role: "user", content: "/ponytail-gain" }] }, "demo-model");
+    expect(result.text).toMatch(/dashboard/i);
+  });
+
+  it("requires explicit stream:true; absent stream answers JSON", () => {
     detectFormatMock.mockReturnValue("gemini");
 
-    const result = await handlePonytailCommands(
+    const streamed = handlePonytailCommands(
       { messages: [{ role: "user", content: "/ponytail-help" }], stream: true },
+      "demo-model",
+      { helpText: "HELP" },
+    );
+    const nonStreamed = handlePonytailCommands(
+      { messages: [{ role: "user", content: "/ponytail-help" }] },
       "demo-model",
       { helpText: "HELP" },
     );
 
     expect(createStreamingResponse).toHaveBeenCalledWith("gemini", "demo-model", "HELP");
-    expect(result.kind).toBe("sse");
+    expect(streamed.kind).toBe("sse");
+    expect(nonStreamed.kind).toBe("json");
   });
 });
