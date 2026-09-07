@@ -1,3 +1,9 @@
+# v0.5.59-local.7 (2026-09-07)
+
+- Port local các fix đã review: Headroom bảo toàn Claude block/tool identity, proxy redirect tương đối, mặc định query thống kê Token Saver.
+- Thêm Ponytail command bridge, build wrapper cách ly Windows và vision cho OpenCode Go Muse Spark 1.3.
+- Giữ nền local.6 cùng refresh/quota Antigravity; không cập nhật toàn bộ upstream.
+
 # v0.5.59-local.6 (2026-09-06)
 
 Ports #3813 (sequential background refresh, bounded env config, lazy projectId)
