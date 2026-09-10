@@ -1,3 +1,8 @@
+# v0.5.59-local.8 (2026-09-10)
+
+- CLI pack từ master 2bb1f0a32: thêm DeepSeek V4.1 Flash (`deepseek-flash`) cho provider `opencode-go`.
+- Không đổi hành vi khác; giữ nền local.7.
+
 # v0.5.59-local.7 (2026-09-07)
 
 - Port local các fix đã review: Headroom bảo toàn Claude block/tool identity, proxy redirect tương đối, mặc định query thống kê Token Saver.
