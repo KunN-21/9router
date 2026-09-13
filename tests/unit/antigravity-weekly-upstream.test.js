@@ -7,18 +7,20 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 import {
-  parseWeeklyQuotaSummary,
-  fetchAntigravityWeeklyQuota,
-  _clearWeeklyCache,
-} from "../../open-sse/services/usage/antigravity-weekly.js";
+  parseAntigravityWeeklyQuotas,
+  fetchAndParseAntigravityWeeklyQuotas,
+} from "../../open-sse/services/usage/antigravityWeeklyQuota.js";
 
 // — Fixtures ——————————————————————————————————————————————
+// NOTE: cache is keyed per token+project with no test reset export, so every
+// fetcher test uses a unique token to avoid cross-test cache pollution.
 const GEMINI_GROUP = {
   displayName: "Gemini Models",
   buckets: [
     {
       bucketId: "gemini-weekly-bucket",
       displayName: "Weekly Limit",
+      window: "weekly",
       remainingFraction: 0.75,
       resetTime: "2026-09-15T00:00:00Z",
     },
@@ -37,6 +39,7 @@ const CLAUDE_GPT_GROUP = {
     {
       bucketId: "claude-gpt-weekly",
       displayName: "Weekly Quota",
+      window: "weekly",
       remainingFraction: 0.5,
       resetTime: "2026-09-14T00:00:00Z",
     },
@@ -51,34 +54,34 @@ const NESTED_RESPONSE = {
   },
 };
 
-// — parseWeeklyQuotaSummary ———————————————————————————————
-describe("parseWeeklyQuotaSummary", () => {
+// — parseAntigravityWeeklyQuotas ———————————————————————————
+describe("parseAntigravityWeeklyQuotas", () => {
   it("extracts Gemini weekly quota from top-level groups", () => {
-    const result = parseWeeklyQuotaSummary(FULL_RESPONSE);
+    const result = parseAntigravityWeeklyQuotas(FULL_RESPONSE);
     expect(result.gemini_weekly).toMatchObject({
       used: 250,
       total: 1000,
       remainingPercentage: 75,
-      displayName: "Gemini (Weekly)",
+      displayName: "Gemini Weekly",
       unlimited: false,
     });
     expect(result.gemini_weekly.resetAt).toBe("2026-09-15T00:00:00.000Z");
   });
 
   it("extracts Claude & GPT weekly quota", () => {
-    const result = parseWeeklyQuotaSummary(FULL_RESPONSE);
+    const result = parseAntigravityWeeklyQuotas(FULL_RESPONSE);
     expect(result.claude_gpt_weekly).toMatchObject({
       used: 500,
       total: 1000,
       remainingPercentage: 50,
-      displayName: "Claude & GPT (Weekly)",
+      displayName: "Claude & GPT Weekly",
       unlimited: false,
     });
     expect(result.claude_gpt_weekly.resetAt).toBe("2026-09-14T00:00:00.000Z");
   });
 
   it("handles alternate nested quotaSummary.groups shape", () => {
-    const result = parseWeeklyQuotaSummary(NESTED_RESPONSE);
+    const result = parseAntigravityWeeklyQuotas(NESTED_RESPONSE);
     expect(result.gemini_weekly).toBeDefined();
     expect(result.claude_gpt_weekly).toBeDefined();
     expect(result.gemini_weekly.remainingPercentage).toBe(75);
@@ -99,7 +102,7 @@ describe("parseWeeklyQuotaSummary", () => {
         ],
       }],
     };
-    const result = parseWeeklyQuotaSummary(data);
+    const result = parseAntigravityWeeklyQuotas(data);
     expect(result).toEqual({});
   });
 
@@ -110,33 +113,34 @@ describe("parseWeeklyQuotaSummary", () => {
         buckets: [{
           bucketId: "gemini-weekly-bucket",
           displayName: "Weekly Limit",
+          window: "weekly",
           remainingFraction: 0.75,
           resetTime: "2026-09-15T00:00:00Z",
           disabled: true,
         }],
       }],
     };
-    const result = parseWeeklyQuotaSummary(data);
+    const result = parseAntigravityWeeklyQuotas(data);
     expect(result).toEqual({});
   });
 
   it("returns empty object for null/undefined input", () => {
-    expect(parseWeeklyQuotaSummary(null)).toEqual({});
-    expect(parseWeeklyQuotaSummary(undefined)).toEqual({});
-    expect(parseWeeklyQuotaSummary("string")).toEqual({});
+    expect(parseAntigravityWeeklyQuotas(null)).toEqual({});
+    expect(parseAntigravityWeeklyQuotas(undefined)).toEqual({});
+    expect(parseAntigravityWeeklyQuotas("string")).toEqual({});
   });
 
   it("returns empty object for response with no groups", () => {
-    expect(parseWeeklyQuotaSummary({})).toEqual({});
-    expect(parseWeeklyQuotaSummary({ groups: "not-array" })).toEqual({});
-    expect(parseWeeklyQuotaSummary({ quotaSummary: {} })).toEqual({});
+    expect(parseAntigravityWeeklyQuotas({})).toEqual({});
+    expect(parseAntigravityWeeklyQuotas({ groups: "not-array" })).toEqual({});
+    expect(parseAntigravityWeeklyQuotas({ quotaSummary: {} })).toEqual({});
   });
 
   it("handles groups with no buckets gracefully", () => {
     const data = {
       groups: [{ displayName: "Gemini Models" }],
     };
-    expect(parseWeeklyQuotaSummary(data)).toEqual({});
+    expect(parseAntigravityWeeklyQuotas(data)).toEqual({});
   });
 
   it("handles bucket with non-finite remainingFraction", () => {
@@ -146,11 +150,12 @@ describe("parseWeeklyQuotaSummary", () => {
         buckets: [{
           bucketId: "weekly-bucket",
           displayName: "Weekly",
+          window: "weekly",
           remainingFraction: "not-a-number",
         }],
       }],
     };
-    expect(parseWeeklyQuotaSummary(data)).toEqual({});
+    expect(parseAntigravityWeeklyQuotas(data)).toEqual({});
   });
 
   it("ignores groups that don't match known families", () => {
@@ -160,19 +165,19 @@ describe("parseWeeklyQuotaSummary", () => {
         buckets: [{
           bucketId: "weekly-bucket",
           displayName: "Weekly",
+          window: "weekly",
           remainingFraction: 0.5,
         }],
       }],
     };
-    expect(parseWeeklyQuotaSummary(data)).toEqual({});
+    expect(parseAntigravityWeeklyQuotas(data)).toEqual({});
   });
 });
 
-// — fetchAntigravityWeeklyQuota ———————————————————————————
-describe("fetchAntigravityWeeklyQuota", () => {
+// — fetchAndParseAntigravityWeeklyQuotas ————————————————————
+describe("fetchAndParseAntigravityWeeklyQuotas", () => {
   beforeEach(() => {
     proxyAwareFetch.mockReset();
-    _clearWeeklyCache();
   });
 
   it("fetches and returns parsed weekly quota on success", async () => {
@@ -181,38 +186,38 @@ describe("fetchAntigravityWeeklyQuota", () => {
       json: async () => FULL_RESPONSE,
     });
 
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-success", "project-1");
     expect(result.gemini_weekly).toBeDefined();
     expect(result.claude_gpt_weekly).toBeDefined();
   });
 
   it("returns {} on HTTP 401", async () => {
     proxyAwareFetch.mockResolvedValue({ ok: false, status: 401 });
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-401", "project-1");
     expect(result).toEqual({});
   });
 
   it("returns {} on HTTP 403", async () => {
     proxyAwareFetch.mockResolvedValue({ ok: false, status: 403 });
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-403", "project-1");
     expect(result).toEqual({});
   });
 
   it("returns {} on HTTP 404", async () => {
     proxyAwareFetch.mockResolvedValue({ ok: false, status: 404 });
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-404", "project-1");
     expect(result).toEqual({});
   });
 
   it("returns {} on HTTP 429", async () => {
     proxyAwareFetch.mockResolvedValue({ ok: false, status: 429 });
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-429", "project-1");
     expect(result).toEqual({});
   });
 
   it("returns {} on network error", async () => {
     proxyAwareFetch.mockRejectedValue(new Error("network timeout"));
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-net", "project-1");
     expect(result).toEqual({});
   });
 
@@ -221,7 +226,7 @@ describe("fetchAntigravityWeeklyQuota", () => {
       ok: true,
       json: async () => { throw new SyntaxError("Unexpected token"); },
     });
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-badjson", "project-1");
     expect(result).toEqual({});
   });
 
@@ -231,8 +236,8 @@ describe("fetchAntigravityWeeklyQuota", () => {
       resolveResponse = resolve;
     }));
 
-    const p1 = fetchAntigravityWeeklyQuota("token", "project-1");
-    const p2 = fetchAntigravityWeeklyQuota("token", "project-1");
+    const p1 = fetchAndParseAntigravityWeeklyQuotas("token-dedup", "project-1");
+    const p2 = fetchAndParseAntigravityWeeklyQuotas("token-dedup", "project-1");
 
     resolveResponse({ ok: true, json: async () => FULL_RESPONSE });
 
@@ -247,8 +252,8 @@ describe("fetchAntigravityWeeklyQuota", () => {
       json: async () => FULL_RESPONSE,
     });
 
-    await fetchAntigravityWeeklyQuota("token", "project-1");
-    const result = await fetchAntigravityWeeklyQuota("token", "project-1");
+    await fetchAndParseAntigravityWeeklyQuotas("token-cache-ttl", "project-1");
+    const result = await fetchAndParseAntigravityWeeklyQuotas("token-cache-ttl", "project-1");
 
     expect(proxyAwareFetch).toHaveBeenCalledTimes(1);
     expect(result.gemini_weekly).toBeDefined();
@@ -260,14 +265,14 @@ describe("fetchAntigravityWeeklyQuota", () => {
       json: async () => ({ groups: [] }),
     });
 
-    await fetchAntigravityWeeklyQuota("token", "project-1");
+    await fetchAndParseAntigravityWeeklyQuotas("token-headers", "project-1");
 
     expect(proxyAwareFetch).toHaveBeenCalledWith(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          "Authorization": "Bearer token",
+          "Authorization": "Bearer token-headers",
           "User-Agent": "antigravity/ide/2.11.0 darwin/arm64",
           "Content-Type": "application/json",
           "X-Client-Name": "antigravity",
@@ -283,7 +288,6 @@ describe("fetchAntigravityWeeklyQuota", () => {
 describe("weekly quota isolation from existing quota", () => {
   beforeEach(() => {
     proxyAwareFetch.mockReset();
-    _clearWeeklyCache();
   });
 
   it("existing getAntigravityUsage succeeds even when weekly RPC fails", async () => {
@@ -316,7 +320,7 @@ describe("weekly quota isolation from existing quota", () => {
     });
 
     const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
-    const result = await getAntigravityUsage("token", {});
+    const result = await getAntigravityUsage("token-isolation-ok", {});
 
     expect(result.quotas["gemini-3.8-flash-high"]).toMatchObject({
       used: 150,
@@ -366,6 +370,7 @@ describe("weekly quota isolation from existing quota", () => {
               buckets: [{
                 bucketId: "gemini-weekly",
                 displayName: "Weekly Limit Remaining",
+                window: "weekly",
                 remainingFraction: 1,
                 resetTime: "2026-09-15T00:00:00Z",
               }],
@@ -374,6 +379,7 @@ describe("weekly quota isolation from existing quota", () => {
               buckets: [{
                 bucketId: "3p-weekly",
                 displayName: "Weekly Limit Remaining",
+                window: "weekly",
                 remainingFraction: 0,
                 resetTime: "2026-09-13T12:00:00Z",
               }],
@@ -385,7 +391,7 @@ describe("weekly quota isolation from existing quota", () => {
     });
 
     const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
-    const result = await getAntigravityUsage("token", {});
+    const result = await getAntigravityUsage("token-free-tier", {});
 
     // Per-model quotas should be absent (free-tier accounts skip model parsing)
     expect(result.quotas["gemini-3.8-flash-high"]).toBeUndefined();
@@ -438,6 +444,7 @@ describe("weekly quota isolation from existing quota", () => {
               buckets: [{
                 bucketId: "gemini-weekly",
                 displayName: "Weekly Limit Remaining",
+                window: "weekly",
                 remainingFraction: 1,
                 resetTime: "2026-09-15T00:00:00Z",
               }],
@@ -449,7 +456,7 @@ describe("weekly quota isolation from existing quota", () => {
     });
 
     const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
-    const result = await getAntigravityUsage("token", {});
+    const result = await getAntigravityUsage("token-reconcile", {});
 
     // Per-model quota should show exhausted
     expect(result.quotas["gemini-3.8-flash-high"].remainingPercentage).toBe(0);

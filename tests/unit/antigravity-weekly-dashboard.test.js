@@ -19,14 +19,14 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
         remainingPercentage: 90,
       },
       gemini_weekly: {
-        displayName: "Gemini (Weekly)",
+        displayName: "Gemini Weekly",
         used: 250,
         total: 1000,
         resetAt: "2026-09-15T00:00:00Z",
         remainingPercentage: 75,
       },
       claude_gpt_weekly: {
-        displayName: "Claude & GPT (Weekly)",
+        displayName: "Claude & GPT Weekly",
         used: 500,
         total: 1000,
         resetAt: "2026-09-14T00:00:00Z",
@@ -41,8 +41,8 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
 
     expect(names).toContain("Gemini (Flash / Pro)");
     expect(names).toContain("Claude (Sonnet / Opus)");
-    expect(names).toContain("Gemini (Weekly)");
-    expect(names).toContain("Claude & GPT (Weekly)");
+    expect(names).toContain("Gemini Weekly");
+    expect(names).toContain("Claude & GPT Weekly");
   });
 
   it("uses stable modelKey for weekly rows", () => {
