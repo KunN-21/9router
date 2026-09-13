@@ -94,10 +94,7 @@ async function refreshOne(connection) {
  * @param {{ loadConnections?: Function, refreshConnection?: Function }} [deps]
  */
 export async function runBackgroundTokenRefreshTick(deps = {}) {
-  if (tickRunning) {
-    log.debug("BG_TOKEN_REFRESH", "Tick already running, skip");
-    return;
-  }
+  if (tickRunning) return;
   tickRunning = true;
   try {
     const load = deps.loadConnections || loadActiveConnections;
@@ -107,12 +104,7 @@ export async function runBackgroundTokenRefreshTick(deps = {}) {
     const connections = await load();
     const due = selectConnectionsNeedingRefresh(connections, Date.now());
 
-    if (due.length === 0) {
-      log.debug("BG_TOKEN_REFRESH", "No connections due for refresh", {
-        active: Array.isArray(connections) ? connections.length : 0,
-      });
-      return;
-    }
+    if (due.length === 0) return;
 
     log.info("BG_TOKEN_REFRESH", "Refreshing due OAuth connections", {
       due: due.length,
@@ -162,14 +154,8 @@ export async function runBackgroundTokenRefreshTick(deps = {}) {
  */
 export function startBackgroundTokenRefresh({ intervalMs } = {}) {
   if (started) return false;
-  if (isTruthyEnv(process.env.DISABLE_BACKGROUND_TOKEN_REFRESH)) {
-    log.info("BG_TOKEN_REFRESH", "Disabled via DISABLE_BACKGROUND_TOKEN_REFRESH");
-    return false;
-  }
-  if (isNonServerRuntime()) {
-    log.debug("BG_TOKEN_REFRESH", "Skip start outside long-running server runtime");
-    return false;
-  }
+  if (isTruthyEnv(process.env.DISABLE_BACKGROUND_TOKEN_REFRESH)) return false;
+  if (isNonServerRuntime()) return false;
 
   started = true;
   const period = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : DEFAULT_INTERVAL_MS;
@@ -189,11 +175,6 @@ export function startBackgroundTokenRefresh({ intervalMs } = {}) {
   intervalHandle = setInterval(safeTick, period);
   if (intervalHandle.unref) intervalHandle.unref();
 
-  log.info("BG_TOKEN_REFRESH", "Scheduler started", {
-    intervalMs: period,
-    initialDelayMs: INITIAL_DELAY_MS,
-    leadMs: BACKGROUND_REFRESH_LEAD_MS,
-  });
   return true;
 }
 
@@ -208,6 +189,5 @@ export function stopBackgroundTokenRefresh() {
   }
   if (started) {
     started = false;
-    log.info("BG_TOKEN_REFRESH", "Scheduler stopped");
   }
 }

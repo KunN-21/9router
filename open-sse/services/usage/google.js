@@ -163,10 +163,20 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
     ]);
     const quotas = {};
 
-    // Parse model quotas (inspired by vscode-antigravity-cockpit)
-    if (data.models) {
+    // Detect tier: free-tier accounts only have weekly quotas (no separate 5h window).
+    // On free-tier, fetchAvailableModels returns misleading per-model quota info
+    // (missing remainingFraction defaults to 0, or reflects the weekly limit not a 5h window).
+    const paidTierId = subscriptionInfo?.paidTier?.id;
+    const isFreeTier = !paidTierId || paidTierId === "free-tier";
+
+    // Parse model quotas only for paid-tier accounts.
+    // Free-tier accounts skip this — their only meaningful quota is the weekly limit.
+    if (!isFreeTier && data.models) {
       // Filter only recommended/important models (must match PROVIDER_MODELS ag ids)
       const importantModels = [
+        'gemini-3.8-flash-high',
+        'gemini-3.8-flash-medium',
+        'gemini-3.8-flash-low',
         'gemini-3.7-flash-high',
         'gemini-3.7-flash-medium',
         'gemini-3.7-flash-low',
@@ -215,11 +225,50 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
       }
     }
 
+
+    // Reconcile weekly quota against model family status (upstream):
+    // if every model in a family is exhausted (0%) until a future reset, the
+    // weekly limit cannot still be available — Free Starter RPC buggily reports
+    // remainingFraction 1 after depletion. Copy-on-write: weeklyQuotas may be a
+    // cached reference, never mutate it.
+    const reconciledWeekly = { ...weeklyQuotas };
+    const familyEntries = Object.entries(quotas);
+    const geminiModels = familyEntries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image"));
+    const claudeModels = familyEntries.filter(([k]) => k.startsWith("claude-"));
+
+    if (reconciledWeekly.gemini_weekly && geminiModels.length > 0) {
+      const allExhausted = geminiModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
+      if (allExhausted && reconciledWeekly.gemini_weekly.remainingPercentage > 0) {
+        const maxResetAt = geminiModels.reduce((max, [, q]) =>
+          !max || (q.resetAt && new Date(q.resetAt) > new Date(max)) ? q.resetAt : max, null);
+        reconciledWeekly.gemini_weekly = {
+          ...reconciledWeekly.gemini_weekly,
+          used: reconciledWeekly.gemini_weekly.total,
+          remainingPercentage: 0,
+          ...(maxResetAt ? { resetAt: maxResetAt } : {}),
+        };
+      }
+    }
+
+    if (reconciledWeekly.claude_gpt_weekly && claudeModels.length > 0) {
+      const allExhausted = claudeModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
+      if (allExhausted && reconciledWeekly.claude_gpt_weekly.remainingPercentage > 0) {
+        const maxResetAt = claudeModels.reduce((max, [, q]) =>
+          !max || (q.resetAt && new Date(q.resetAt) > new Date(max)) ? q.resetAt : max, null);
+        reconciledWeekly.claude_gpt_weekly = {
+          ...reconciledWeekly.claude_gpt_weekly,
+          used: reconciledWeekly.claude_gpt_weekly.total,
+          remainingPercentage: 0,
+          ...(maxResetAt ? { resetAt: maxResetAt } : {}),
+        };
+      }
+    }
+
     return {
       plan: subscriptionInfo?.currentTier?.name || "Unknown",
       quotas: {
         ...quotas,
-        ...weeklyQuotas,
+        ...reconciledWeekly,
       },
       subscriptionInfo,
     };
