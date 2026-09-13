@@ -167,7 +167,10 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
     // On free-tier, fetchAvailableModels returns misleading per-model quota info
     // (missing remainingFraction defaults to 0, or reflects the weekly limit not a 5h window).
     const paidTierId = subscriptionInfo?.paidTier?.id;
-    const isFreeTier = !paidTierId || paidTierId === "free-tier";
+    // Fail-open: only an explicit "free-tier" id borrows free semantic.
+    // Null subscription (loadCodeAssist failed) or absent paidTier means
+    // unknown tier, not free — still parse 5h models from data.models.
+    const isFreeTier = paidTierId === "free-tier";
 
     // Parse model quotas only for paid-tier accounts.
     // Free-tier accounts skip this — their only meaningful quota is the weekly limit.
