@@ -7,21 +7,122 @@ import { resolveSessionId } from "../utils/sessionManager.js";
 import { applyOcEgress, flipOcEgress } from "../utils/ocEgress.js";
 import { isMuseSparkModel } from "../providers/models/helpers.js";
 
-// Official opencode CLI sends a versioned fingerprint. Zen's free-tier
-// anonymous-capacity gate rejects unidentified clients.
-const OPENCODE_UA = "opencode/latest/1.18.18/cli";
+const OPENCODE_UA = "opencode/1.18.31";
+const MAX_SESSION_LENGTH = 256;
+const SESSION_HEADER = "x-opencode-session";
+const SESSION_FIELD = "_opencodeSession";
+export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+function hasValidOpencodeVersion(ua) {
+  const m = String(ua || "").match(/opencode\/(\d+)\.(\d+)(?:\.(\d+))?/i);
+  if (!m) return false;
+  const major = parseInt(m[1], 10);
+  const minor = parseInt(m[2], 10);
+  return major > 1 || (major === 1 && minor >= 17);
+}
+
 // Models served by /zen/v1/responses; every other model stays on /chat/completions.
 const RESPONSES_MODELS = new Set([
   "muse-spark-1.2-contributor-free",
   "muse-spark-1.3-contributor-free",
 ]);
 
-function generateRequestId() {
-  return `msg_${crypto.randomUUID().replace(/-/g, "")}`;
+let lastTimestamp = 0;
+let counter = 0;
+
+function unstableRandom() {
+  const bytes = crypto.randomBytes(14);
+  let randomPart = "";
+  for (let i = 0; i < 14; i++) {
+    randomPart += BASE62_CHARS[bytes[i] % 62];
+  }
+  return randomPart;
 }
 
-function generateSessionId() {
-  return `ses_${crypto.randomUUID().replace(/-/g, "")}`;
+export function generateSessionId(timestamp = Date.now()) {
+  if (timestamp !== lastTimestamp) {
+    lastTimestamp = timestamp;
+    counter = 0;
+  }
+  counter++;
+
+  const current = BigInt(timestamp) * 0x1000n + BigInt(counter);
+  const value = ~current;
+  const time = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
+  return `ses_${time}${unstableRandom()}`;
+}
+
+export function generateRequestId(timestamp = Date.now()) {
+  const current = BigInt(timestamp) * 0x1000n + 1n;
+  const value = current;
+  const time = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
+  return `msg_${time}${unstableRandom()}`;
+}
+
+export function translateSessionId(sessionId, clientTool = "") {
+  if (typeof sessionId === "string" && OPENCODE_SESSION_RE.test(sessionId.trim())) {
+    return sessionId.trim();
+  }
+  const digest = crypto
+    .createHash("sha256")
+    .update(`opencode\0${clientTool || "generic"}\0${sessionId || ""}`)
+    .digest();
+  const timeHex = digest.subarray(0, 6).toString("hex");
+  let randomPart = "";
+  for (let i = 6; i < 20; i++) {
+    randomPart += BASE62_CHARS[digest[i] % 62];
+  }
+  return `ses_${timeHex}${randomPart}`;
+}
+
+function normalizeSession(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > MAX_SESSION_LENGTH) return null;
+  return normalized;
+}
+
+function nativeSession(headers) {
+  if (!headers || typeof headers !== "object") return null;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === SESSION_HEADER) {
+      const normalized = normalizeSession(value);
+      if (normalized && OPENCODE_SESSION_RE.test(normalized)) return normalized;
+    }
+  }
+  return null;
+}
+
+function resolveOpencodeSession(body, credentials, providerSessionId, clientTool) {
+  const headers = credentials?.rawHeaders || {};
+  const native = nativeSession(headers);
+  if (native) return native;
+
+  let incoming = null;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === SESSION_HEADER) {
+      incoming = normalizeSession(value);
+      break;
+    }
+  }
+
+  const resolved = incoming || normalizeSession(providerSessionId) || resolveSessionId({
+    headers,
+    body,
+    connectionId: credentials?.connectionId,
+    scope: "opencode",
+  });
+
+  return resolved ? translateSessionId(resolved, clientTool) : generateSessionId();
 }
 
 // Strip the thinking suffix "model(level)" so registry lookups hit the base id.
@@ -32,23 +133,6 @@ function baseModelId(model) {
 function isResponsesModel(model) {
   const base = baseModelId(model);
   return RESPONSES_MODELS.has(base) || isMuseSparkModel(base);
-}
-
-// Normalize resolved conversation ids into OpenCode's ses_ wire format.
-function toOpencodeSession(id) {
-  const stripped = String(id || "").replace(/^ses_/, "").replace(/-/g, "");
-  return stripped ? `ses_${stripped}` : null;
-}
-
-function resolveOpencodeSession(body, credentials) {
-  const headers = credentials?.rawHeaders || {};
-  return toOpencodeSession(resolveSessionId({
-    headers,
-    body,
-    connectionId: credentials?.connectionId,
-    scope: "opencode",
-    generate: generateSessionId,
-  }));
 }
 
 function normalizeOpencodeReasoning(model, body) {
@@ -79,18 +163,24 @@ export class OpenCodeExecutor extends BaseExecutor {
     super("opencode", PROVIDERS.opencode);
   }
 
+  prepareRequestCredentials({ body, credentials, providerSessionId, clientTool } = {}) {
+    const sourceCredentials = credentials || {};
+    const resolved = resolveOpencodeSession(body, sourceCredentials, providerSessionId, clientTool);
+
+    return {
+      ...sourceCredentials,
+      [SESSION_FIELD]: resolved,
+    };
+  }
+
   transformRequest(model, body, stream, credentials) {
-    // Stash session on per-request credentials. Executor is a singleton, so an
-    // instance field would bleed sessions across concurrent requests.
-    if (credentials) credentials._ocSession = resolveOpencodeSession(body, credentials);
-    if (isResponsesModel(model)) {
+    if (body && typeof body === "object" && model && !body.model) body.model = model;
+    if (isResponsesModel(model) && body && typeof body === "object") {
       // ponytail: chỉ model đã xác nhận auto-only; mở allowlist khi có bằng chứng.
       if ("tool_choice" in body && body.tool_choice !== "auto"
         && this.config.quirks?.forceAutoToolChoiceModels?.includes(baseModelId(model))) {
         body.tool_choice = "auto";
       }
-      // Responses API names output cap max_output_tokens and takes thinking as
-      // reasoning:{effort,summary}; normalize Chat fields at this boundary.
       if (body.max_output_tokens === undefined) {
         if (body.max_completion_tokens !== undefined) body.max_output_tokens = body.max_completion_tokens;
         else if (body.max_tokens !== undefined) body.max_output_tokens = body.max_tokens;
@@ -124,7 +214,7 @@ export class OpenCodeExecutor extends BaseExecutor {
   // restarting 9router. Errors propagate untouched.
   async execute(args) {
     applyOcEgress();
-    return super.execute(args);
+    return super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
   }
 
   buildHeaders(credentials, stream = true) {
@@ -133,18 +223,8 @@ export class OpenCodeExecutor extends BaseExecutor {
     for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
 
     const downstreamUa = lower["user-agent"] || "";
-    const isOpencodeDownstream = downstreamUa.toLowerCase().includes("opencode");
-
-    // OpenCode Zen's free-tier IP rate limiter reads the x-real-ip request
-    // header (ipRateLimiter.ts: rawIp = headers.get("x-real-ip") ?? "" →
-    // ip = "unknown"; no header = ONE global bucket shared with every other
-    // anonymous client). NOTE: in front of opencode.ai the CDN stamps
-    // x-real-ip from the real TCP peer and strips client-supplied values, so
-    // this header is best-effort — the reliable per-user isolation comes from
-    // real egress IPs (see utils/ocEgress.js rotation). We still forward the
-    // sanitized peer IP (x-9r-real-ip stamped by custom-server.js from the
-    // unspoofable TCP socket) because it is harmless and helps when the
-    // upstream is reached through a pass-through proxy.
+    const isOpencodeDownstream = hasValidOpencodeVersion(downstreamUa);
+    const session = credentials?.[SESSION_FIELD] || this.prepareRequestCredentials({ credentials })[SESSION_FIELD];
     const clientIp = lower["x-9r-real-ip"] || lower["x-real-ip"] || "";
 
     return {
@@ -152,7 +232,7 @@ export class OpenCodeExecutor extends BaseExecutor {
       "Authorization": "Bearer public",
       "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
       "x-opencode-client": lower["x-opencode-client"] || "desktop",
-      "x-opencode-session": lower["x-opencode-session"] || credentials?._ocSession || generateSessionId(),
+      "x-opencode-session": session,
       "x-opencode-request": lower["x-opencode-request"] || generateRequestId(),
       "x-opencode-project": lower["x-opencode-project"] || "global",
       ...(clientIp ? { "x-real-ip": clientIp } : {}),

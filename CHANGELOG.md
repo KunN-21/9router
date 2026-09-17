@@ -1,3 +1,7 @@
+# 0.5.75-local.3
+
+- OpenCode Free: resolve 403 FreeTierError using canonical session format (`ses_` + 12 hex + 14 Base62) and valid User-Agent (`opencode/1.18.31`).
+
 # 0.5.75-local.2
 
 - OpenCode Free: demote non-auto `tool_choice` sang `auto` cho riêng `muse-spark-1.3-contributor-free` (+`(max)`), giữ auto/absent và mọi model khác nguyên vẹn.
