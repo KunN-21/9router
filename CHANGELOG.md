@@ -1,3 +1,7 @@
+# 0.5.75-local.2
+
+- OpenCode Free: demote non-auto `tool_choice` sang `auto` cho riêng `muse-spark-1.3-contributor-free` (+`(max)`), giữ auto/absent và mọi model khác nguyên vẹn.
+
 # 0.5.75-local.1
 
 - Merge upstream 17c4cc768, giữ các bản sửa local về routing, quota, schema và lưu trữ.
