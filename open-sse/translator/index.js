@@ -6,6 +6,7 @@ import { restoreToolNames } from "../utils/opencodeFingerprint.js";
 import { filterToOpenAIFormat } from "./formats/openai.js";
 import { stripUnsupportedChatExtensions } from "./concerns/paramSupport.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
+import { resolveFamily } from "../providers/familyProfiles.js";
 import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
@@ -83,28 +84,47 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   // If same format, skip translation steps
   if (sourceFormat !== targetFormat) {
-    // Direct route: if a translator is registered for this exact source:target
-    // pair, use it instead of pivoting through OpenAI. This is lossless for
-    // pairs like claude:kiro (avoids the claude->openai->kiro double-hop).
-    const directFn = requestRegistry.get(`${sourceFormat}:${targetFormat}`);
-    if (directFn) {
-      result = directFn(model, result, stream, credentials);
-    } else {
-      // Step 1: source -> openai (if source is not openai)
-      if (sourceFormat !== FORMATS.OPENAI) {
-        const toOpenAI = requestRegistry.get(`${sourceFormat}:${FORMATS.OPENAI}`);
-        if (toOpenAI) {
-          result = toOpenAI(model, result, stream, credentials);
-          // Log OpenAI intermediate format
-          reqLogger?.logOpenAIRequest?.(result);
+    let familyHandled = false;
+    if (sourceFormat === FORMATS.CLAUDE) {
+      const family = resolveFamily(model);
+      if (family) {
+        const famFn = requestRegistry.get(`claude:${family.family}`);
+        if (famFn) {
+          try {
+            result = famFn(model, result, stream, credentials);
+            familyHandled = true;
+          } catch {
+            familyHandled = false;
+          }
         }
       }
+    }
+    if (familyHandled) {
+      // family direct already applied — skip exact direct and pivot, fall through to applyThinking
+    } else {
+      // Direct route: if a translator is registered for this exact source:target
+      // pair, use it instead of pivoting through OpenAI. This is lossless for
+      // pairs like claude:kiro (avoids the claude->openai->kiro double-hop).
+      const directFn = requestRegistry.get(`${sourceFormat}:${targetFormat}`);
+      if (directFn) {
+        result = directFn(model, result, stream, credentials);
+      } else {
+        // Step 1: source -> openai (if source is not openai)
+        if (sourceFormat !== FORMATS.OPENAI) {
+          const toOpenAI = requestRegistry.get(`${sourceFormat}:${FORMATS.OPENAI}`);
+          if (toOpenAI) {
+            result = toOpenAI(model, result, stream, credentials);
+            // Log OpenAI intermediate format
+            reqLogger?.logOpenAIRequest?.(result);
+          }
+        }
 
-      // Step 2: openai -> target (if target is not openai)
-      if (targetFormat !== FORMATS.OPENAI) {
-        const fromOpenAI = requestRegistry.get(`${FORMATS.OPENAI}:${targetFormat}`);
-        if (fromOpenAI) {
-          result = fromOpenAI(model, result, stream, credentials);
+        // Step 2: openai -> target (if target is not openai)
+        if (targetFormat !== FORMATS.OPENAI) {
+          const fromOpenAI = requestRegistry.get(`${FORMATS.OPENAI}:${targetFormat}`);
+          if (fromOpenAI) {
+            result = fromOpenAI(model, result, stream, credentials);
+          }
         }
       }
     }

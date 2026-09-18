@@ -42,3 +42,27 @@ describe("hashline edit normalize", () => {
     assert.equal(hashAnchor("short"), "short");
   });
 });
+
+describe("translator family direct branch", () => {
+  // ponytail: target VERTEX (no claude:vertex exact registered) — brief's
+  // GEMINI target collides with the claude:gemini family key, so exact direct
+  // fires pre-impl and RED is unobservable. Family branch ignores target.
+  it("family direct bypasses pivot for claude:gemini with gemini-3.8-flash", async () => {
+    const { translateRequest, register } = await import("../../open-sse/translator/index.js");
+    const { FORMATS } = await import("../../open-sse/translator/formats.js");
+    let directCalled = false;
+    register(FORMATS.CLAUDE, "gemini", (model, body) => { directCalled = true; body._directHit = true; return body; });
+    const body = { messages: [{ role: "user", content: "hi" }], tools: [] };
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.VERTEX, "gemini-3.8-flash", body, true, null, null, null, [], null, null);
+    assert.equal(directCalled, true);
+    assert.equal(out._directHit, true);
+  });
+
+  it("fallback pivot when no family match", async () => {
+    const { translateRequest } = await import("../../open-sse/translator/index.js");
+    const { FORMATS } = await import("../../open-sse/translator/formats.js");
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.VERTEX, "unknown-xyz-1.0", body, true, null, null, null, [], null, null);
+    assert.equal(out._directHit, undefined);
+  });
+});
