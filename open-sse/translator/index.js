@@ -334,6 +334,7 @@ import "./request/openai-to-ollama.js";
 import "./request/openai-to-commandcode.js";
 import "./request/claude-to-kiro.js";
 import "./request/claude-to-gemini.js";
+import "./request/claude-to-responses.js";
 import "./response/claude-to-openai.js";
 import "./response/openai-to-claude.js";
 import "./response/gemini-to-openai.js";
