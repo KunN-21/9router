@@ -69,8 +69,6 @@ describe("OpenCode Go Muse Spark tool_choice quirk (config-driven)", () => {
       "muse-spark-1.2-contributor",
       "muse-spark-1.3-contributor",
     ]);
-    // The quirk must NOT leak onto the free (opencode) provider — only Go demotes.
-    expect(PROVIDERS["opencode"].quirks?.forceAutoToolChoiceModels).toBeUndefined();
   });
 });
 

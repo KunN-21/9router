@@ -13,13 +13,38 @@ import {
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
 
+function safeUpstreamUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "unknown";
+  }
+}
+
+function requestMetadata(model, body, stream) {
+  let bodyBytes = 0;
+  try {
+    bodyBytes = Buffer.byteLength(JSON.stringify(body ?? {}), "utf8");
+  } catch {
+    // Ghi metadata fail-open nếu body request không thể serialize.
+  }
+  return {
+    model: String(model || ""),
+    stream: stream !== false,
+    bodyBytes,
+    inputItems: Array.isArray(body?.input) ? body.input.length : 0,
+    toolCount: Array.isArray(body?.tools) ? body.tools.length : 0,
+  };
+}
+
 const OPENCODE_UA = "opencode/1.18.31";
 const MAX_SESSION_LENGTH = 256;
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeSession";
 export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const MAX_TOOL_NAME_LEN = 128;
+const MAX_TOOL_NAME_LEN = 64;
 const OPENCODE_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read"];
 
 function hasValidOpencodeVersion(ua) {
@@ -169,6 +194,7 @@ function normalizeOpencodeReasoning(model, body) {
 function normalizeResponsesTools(body) {
   if (!Array.isArray(body.tools)) return;
   const validNames = new Set();
+  const normalizedNames = new Map();
   body.tools = body.tools.filter((tool) => {
     if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
     const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : null;
@@ -180,18 +206,24 @@ function normalizeResponsesTools(body) {
       ? tool.parameters
       : (fn?.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters) ? fn.parameters : { type: "object", properties: {} });
     if (parameters.type === "object" && !parameters.properties) parameters = { ...parameters, properties: {} };
+    const normalizedName = name.slice(0, MAX_TOOL_NAME_LEN);
+    if (validNames.has(normalizedName)) return false;
     for (const k of Object.keys(tool)) delete tool[k];
     tool.type = "function";
-    tool.name = name.slice(0, MAX_TOOL_NAME_LEN);
+    tool.name = normalizedName;
     if (description) tool.description = description;
     tool.parameters = parameters;
-    validNames.add(tool.name);
+    validNames.add(normalizedName);
+    normalizedNames.set(name, normalizedName);
+    normalizedNames.set(normalizedName, normalizedName);
     return true;
   });
   if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
     if (body.tool_choice.type === "function") {
       const n = typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "";
-      if (!n || !validNames.has(n)) delete body.tool_choice;
+      const normalizedName = normalizedNames.get(n);
+      if (!normalizedName) delete body.tool_choice;
+      else body.tool_choice.name = normalizedName;
     }
   }
 }
@@ -344,7 +376,25 @@ export class OpenCodeExecutor extends BaseExecutor {
   // restarting 9router. Errors propagate untouched.
   async execute(args) {
     applyOcEgress();
-    return super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
+    const startedAt = Date.now();
+    const metadata = requestMetadata(args?.model, args?.body, args?.stream);
+    try {
+      const result = await super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
+      args?.log?.debug?.("OPENCODE", "upstream complete", {
+        ...metadata,
+        status: result.response?.status,
+        url: safeUpstreamUrl(result.url),
+        elapsedMs: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      args?.log?.debug?.("OPENCODE", "upstream failed", {
+        ...metadata,
+        error: error?.name || "Error",
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
   }
 
   buildHeaders(credentials, stream = true) {

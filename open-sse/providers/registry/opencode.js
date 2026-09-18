@@ -22,6 +22,7 @@ export default {
       "x-opencode-client": "desktop",
     },
     noAuth: true,
+    retry: { 500: { attempts: 2, delayMs: 1000 } },
     quirks: {
       forceAutoToolChoiceModels: ["muse-spark-1.3-contributor-free"],
     },

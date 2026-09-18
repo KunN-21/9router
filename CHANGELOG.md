@@ -1,3 +1,9 @@
+# 0.5.75-local.5
+
+- OpenCode: cap Responses tool name to 64 characters (both `opencode` and `opencode-go`) and remap named `tool_choice` to the normalized form so agentic requests pass the upstream tool-name length gate without altering caller tool schemas.
+- OpenCode: retry transient upstream HTTP 500 twice with 1-second delay via provider-level `transport.retry` (only `opencode`); `opencode-go` and other providers keep the default no-500 retry policy so Combo fallback stays in control.
+- OpenCode: log safe upstream metadata (origin+pathname, status, body byte count, model, stream, input/tool counts, elapsed ms) around `execute()`; no body, session, header or API-key content is logged.
+
 # 0.5.75-local.4
 
 - OpenCode Free: complete free-tier client fingerprint to stop recurring 403 (force stream, file-search tool quartet injection, strip prior encrypted reasoning items).

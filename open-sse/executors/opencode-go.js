@@ -14,7 +14,7 @@ const SESSION_FIELD = "_opencodeGoSession";
 const MAX_SESSION_LENGTH = 256;
 
 const RESPONSES_BASE_URL = "https://opencode.ai/zen/go/v1/responses";
-const MAX_TOOL_NAME_LEN = 128;
+const MAX_TOOL_NAME_LEN = 64;
 
 function normalizeSession(value) {
   if (typeof value !== "string") return null;
@@ -54,6 +54,7 @@ function isResponsesModel(model) {
 function normalizeResponsesTools(body) {
   if (!Array.isArray(body.tools)) return;
   const validNames = new Set();
+  const normalizedNames = new Map();
   body.tools = body.tools.filter((tool) => {
     if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
     const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : null;
@@ -67,18 +68,24 @@ function normalizeResponsesTools(body) {
     // Mirror the request translator: {type:"object"} without properties is rejected
     // by strict Responses backends, so fill in the empty properties map.
     if (parameters.type === "object" && !parameters.properties) parameters = { ...parameters, properties: {} };
+    const normalizedName = name.slice(0, MAX_TOOL_NAME_LEN);
+    if (validNames.has(normalizedName)) return false;
     for (const k of Object.keys(tool)) delete tool[k];
     tool.type = "function";
-    tool.name = name.slice(0, MAX_TOOL_NAME_LEN);
+    tool.name = normalizedName;
     if (description) tool.description = description;
     tool.parameters = parameters;
-    validNames.add(tool.name);
+    validNames.add(normalizedName);
+    normalizedNames.set(name, normalizedName);
+    normalizedNames.set(normalizedName, normalizedName);
     return true;
   });
   if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
     if (body.tool_choice.type === "function") {
       const n = typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "";
-      if (!n || !validNames.has(n)) delete body.tool_choice;
+      const normalizedName = normalizedNames.get(n);
+      if (!normalizedName) delete body.tool_choice;
+      else body.tool_choice.name = normalizedName;
     }
   }
 }

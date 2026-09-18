@@ -121,6 +121,27 @@ describe("OpenCodeGoExecutor routing + sanitization", () => {
     expect(out.tools.find((t) => t.name === "full").parameters).toEqual({ type: "object", properties: { a: { type: "string" } } });
   });
 
+  it("caps Responses tool declarations and calls at 64 while preserving named choice", () => {
+    const ex = new OpenCodeGoExecutor();
+    ex.config.quirks.forceAutoToolChoiceModels = [];
+    const longName = `tool-${"x".repeat(100)}`;
+    const body = {
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { type: "function_call", name: longName, call_id: "c1", arguments: "{}" },
+      ],
+      tools: [{ type: "function", name: longName, parameters: { type: "object", properties: {} } }],
+      tool_choice: { type: "function", name: longName },
+    };
+
+    const out = ex.transformRequest("muse-spark-1.2-contributor", body, true, {});
+
+    expect(out.tools[0].name).toHaveLength(64);
+    expect(out.input.find((item) => item.type === "function_call").name).toHaveLength(64);
+    expect(out.tool_choice).toEqual({ type: "function", name: out.tools[0].name });
+  });
+
   it("strips prior-turn reasoning items carrying encrypted_content from input", () => {
     const ex = new OpenCodeGoExecutor();
     const body = {
