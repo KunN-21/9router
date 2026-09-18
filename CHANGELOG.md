@@ -1,3 +1,8 @@
+# v0.5.81-local.2
+
+- Add direct claude translators bypassing lossy OpenAI pivot (`cd247d10f`, `89e519144`): `claude-to-gemini.js` (key `claude:gemini:gemini`), `claude-to-responses.js` (keys `claude:muse-spark:openai-responses`, `claude:gpt-family:openai-responses`); +1 import line each in `open-sse/translator/index.js`.
+- Scoped suite 14/14 pass (`claude-to-gemini-direct` 2 + `claude-to-responses-direct` 3 + `family-direct-route` 9); provider/alias/oauth baselines byte-equal; no behavior change outside new family keys.
+
 # v0.5.81-local.1
 
 - Merge PR #4142 `fix(opencode): rename free-tier tool quartet so Claude Code CLI stops getting 403` (560bed3, yxxrn) — `opencodeFingerprint.js` rename quartet case-variants to lowercase, drop pure duplicates, retarget explicit `tool_choice`, restore on all three response paths via `WeakMap`; measured 43 caps tools 403→200, no lowercase leak.
