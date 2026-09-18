@@ -1,3 +1,32 @@
+# v0.5.79 (2026-09-18)
+
+## Features
+- **Xiaomi MiMo**: merge MiMo Desktop support into `xiaomi-mimo` with dual auth (API key + Desktop/OAuth session), Preview models support, and encrypted-callback OAuth flow
+- **Claude Code**: add 1M-context toggle (`[1m]` marker) and drive `CLAUDE_CODE_AUTO_COMPACT_WINDOW` directly from the dashboard
+- **Models**: add DeepSeek-V4.1-Flash to DeepSeek provider, CodeBuddy-Intl, and Ollama (`deepseek-v4.1-flash:cloud`); enable `low`..`max` reasoning effort levels and vision capability for DeepSeek-V4.*
+- **i18n**: integrate Persian (fa) translation
+
+## Fixes
+- **OpenCode / OpenCode Go**: resolve 403 `FreeTierError` and 429 rate limits with canonical session format, valid User-Agent, and stable upstream session reuse; force stream and declare `forceStream` for free-tier SSE aggregation; cloak decoy tools, normalize Muse Free tool choice, and strip prior reasoning items on Responses models; route Union Alpha via Messages API
+- **Kiro**: preserve underscores in tool names (`mcp__server__tool`) and restore client tool names in responses; use neutral placeholder for tool-result-only turns; forward tool-result images
+- **Stream**: report aborts after HTTP 200 in-band (per-format error frames) instead of closing silently
+- **Command Code**: preserve images and `reasoning_effort` on `/alpha/generate`; retry transient stream errors and avoid fake stop chunks; add Quota Tracker support
+- **Zed**: harden OAuth lifecycle (preserve `systemId`, renew proxy timeout), support live model resolution, and lower display priority in OAuth list
+- **Antigravity**: scope cached thought signatures to model family; strip Claude Code billing headers from system prompts; sanitize Hermes system identity
+- **Codex**: route bare `codex-auto-review` requests to the Codex provider (#4135)
+- **Auth**: do not cool down an account for request-scoped 4xx errors
+- **Usage**: improve DeepSeek credit balance display as currency credit instead of 0/total quota bar
+- **Model Catalog**: scope synced catalog to gateways and declare vision capabilities for DeepSeek V4.1-Flash IDs
+
+
+# 0.5.79-local.1
+
+- Merge upstream v0.5.79 (8e15f0bd, range 17c4cc7..8e15f0bd) — Xiaomi MiMo, Claude 1M, DeepSeek-V4.1-Flash, Persian i18n, stream/kiro/commandcode/zed/antigravity/codex fixes.
+- Keep local OpenCode hardening: Responses tool-name cap 64 (not 128, gate #3523), normalizedNames dedupe + tool_choice remap, retry 500x2 for opencode, safe upstream metadata log (origin+pathname,status,bodyBytes,elapsed).
+- Keep 4-tool fingerprint (bash,glob,grep,read) with cloaked unavailable description; stable per-identity session reuse (MEMORY_CONFIG TTL), x-opencode-request derive, /messages routing for union-alpha.
+- Build: keep `node scripts/build-app.js` isolation (HOME/USERPROFILE/APPDATA/LOCALAPPDATA) instead of plain `next build`.
+
+
 # 0.5.75-local.5
 
 - OpenCode: cap Responses tool name to 64 characters (both `opencode` and `opencode-go`) and remap named `tool_choice` to the normalized form so agentic requests pass the upstream tool-name length gate without altering caller tool schemas.
@@ -19,6 +48,7 @@
 # 0.5.75-local.1
 
 - Merge upstream 17c4cc768, giữ các bản sửa local về routing, quota, schema và lưu trữ.
+
 
 # v0.5.75 (2026-09-10)
 
@@ -94,40 +124,6 @@
 - **Models**: support single model lookup with provider-prefixed IDs (e.g. `cc/claude-sonnet-5`)
 - **Translator**: route Gemini thinking through `reasoning_effort` on OpenAI-compatible wire; convert `prefixItems` and ensure array items in Gemini schema sanitizer
 - **UI**: apply persisted theme before first paint to prevent flash on reload; translate combo vision adapter label
-# v0.5.59-local.8 (2026-09-10)
-
-- CLI pack từ master 2bb1f0a32: thêm DeepSeek V4.1 Flash (`deepseek-flash`) cho provider `opencode-go`.
-- Không đổi hành vi khác; giữ nền local.7.
-
-# v0.5.59-local.7 (2026-09-07)
-
-- Port local các fix đã review: Headroom bảo toàn Claude block/tool identity, proxy redirect tương đối, mặc định query thống kê Token Saver.
-- Thêm Ponytail command bridge, build wrapper cách ly Windows và vision cho OpenCode Go Muse Spark 1.3.
-- Giữ nền local.6 cùng refresh/quota Antigravity; không cập nhật toàn bộ upstream.
-
-# v0.5.59-local.6 (2026-09-06)
-
-Ports #3813 (sequential background refresh, bounded env config, lazy projectId)
-+ #3767 (Antigravity weekly quota) with floor-before-validation hardening.
-
-# v0.5.59-local.5 (2026-09-06)
-
-PR #3832 integration (cherry-pick 14e9a873 onto local master eac16c541):
-- **Codex**: Chat/Claude translated tools with omitted strict default to false
-  so Responses does not auto-normalize optional fields to required; native
-  flatten preserves explicit strict and leaves omitted absent.
-- Test adapted to local master: normalizeToolChoice keeps named tool_choice
-  as Responses-native shape (PR parent dropped it).
-
-# v0.5.59-local.4 (2026-09-05)
-
-Batch-1 upstream integration (13 gates on fork master 0.5.59-local.3):
-- **Translator**: placeholder for binary tool_result; max_completion_tokens for reasoning; Responses prompt_cache_key parity; terminal tool-arg dedupe (shared helper, late usage preserved).
-- **Providers**: Grok 4.6 reasoning effort; Responses/registry additions; upstream route aligns endpoint with translated body (sourceTransport first).
-- **Reliability**: combo bounded empty-stream failover; upstream status classes preserved (wrong-model permanent, breaker 404→503); usage dedupe keeps same-ms rows.
-- **Usage**: identity by key id with write-time fallback; raw-free persisted rows; deleted-key daily/24h parity.
-- **DB**: sql.js atomic publish hardening; tunnel CSPRNG short ids; CLI settings refuse to clobber unreadable configs.
-- Excluded: PR #3520 (replaced by #3779 terminal dedupe).
 
 # v0.5.59 (2026-08-29)
 
@@ -245,39 +241,6 @@ Batch-1 upstream integration (13 gates on fork master 0.5.59-local.3):
   `document.fonts.ready` resolved before the 4MB woff2 even started loading,
   leaving icons blank until a second load
 
-# v0.5.55-local.5 (2026-08-15)
-
-Local install only — not an upstream release.
-
-## Features
-- **OpenCode Free (oc)**: added Ox Alpha (`oc/x-preview-f-free`) via Chat Completions per Zen docs.
-- **OpenCode-Go**: added Ox Alpha Free (`ocg/ox-alpha-free`) via Go Chat Completions per Zen docs.
-
-## Fixes
-- **OpenCode-Go**: Muse Spark 1.2 Contributor uses the exact official ID
-  `muse-spark-1.2-contributor` and is a Responses-only model — Claude-format
-  requests now translate to `/zen/go/v1/responses` instead of hitting an
-  unsupported endpoint.
-- **OpenCode Free (oc)**: added Muse Spark 1.2 Contributor Free
-  (`muse-spark-1.2-contributor-free`, free tier) — Responses-only model on
-  `https://opencode.ai/zen/v1/responses` with the exact official ID; Claude
-  Code requests route via `@ai-sdk/openai` semantics. Free-tier prompts and
-  completions may be used to improve future Meta models.
-- **Translator schema fix**: chat → Responses translation now maps
-  `max_tokens` to Responses' official `max_output_tokens` (previously the
-  wrong field name was sent upstream).
-
-# v0.5.55-local.1 (2026-08-15)
-
-Local install only — not an upstream release.
-
-## Fixes
-- **OpenCode-Go**: DeepSeek stays on `/zen/go/v1/chat/completions`. Claude-format
-  clients no longer hit `/messages` (400). `model(max)` is a thinking override
-  and is stripped before metadata lookup.
-- **OpenCode Free**: send official `User-Agent: opencode/1.18.18` and keep
-  session ids per request. Did **not** take PR #3321 egress switching or
-  `x-real-ip` forwarding (loopback would share one quota bucket).
 # v0.5.55 (2026-08-14)
 
 ## Features

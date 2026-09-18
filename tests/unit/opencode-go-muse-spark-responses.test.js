@@ -48,6 +48,22 @@ describe("ocg/muse-spark-1.3-contributor catalog", () => {
 });
 
 describe("OpenCodeGoExecutor routing + sanitization", () => {
+  it("routes gpt-5.6-luna to /responses", () => {
+    const ex = new OpenCodeGoExecutor();
+    expect(ex.buildUrl("gpt-5.6-luna")).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(ex.buildUrl("gpt-5.6-luna(high)", true, 0, {
+      runtimeTransport: { baseUrl: "https://opencode.ai/zen/go/v1/chat/completions" },
+    })).toBe("https://opencode.ai/zen/go/v1/responses");
+  });
+
+  it("routes every responses-only registry model (grok-4.6) to /responses", () => {
+    const ex = new OpenCodeGoExecutor();
+    expect(ex.buildUrl("grok-4.6")).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(ex.buildUrl("grok-4.6(high)", true, 0, {
+      runtimeTransport: { baseUrl: "https://opencode.ai/zen/go/v1/chat/completions" },
+    })).toBe("https://opencode.ai/zen/go/v1/responses");
+  });
+
   it("is wired for opencode-go and routes muse-spark to /responses", () => {
     expect(getExecutor("opencode-go")).toBeInstanceOf(OpenCodeGoExecutor);
     const ex = new OpenCodeGoExecutor();
@@ -121,27 +137,6 @@ describe("OpenCodeGoExecutor routing + sanitization", () => {
     expect(out.tools.find((t) => t.name === "full").parameters).toEqual({ type: "object", properties: { a: { type: "string" } } });
   });
 
-  it("caps Responses tool declarations and calls at 64 while preserving named choice", () => {
-    const ex = new OpenCodeGoExecutor();
-    ex.config.quirks.forceAutoToolChoiceModels = [];
-    const longName = `tool-${"x".repeat(100)}`;
-    const body = {
-      model: MODEL,
-      input: [
-        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
-        { type: "function_call", name: longName, call_id: "c1", arguments: "{}" },
-      ],
-      tools: [{ type: "function", name: longName, parameters: { type: "object", properties: {} } }],
-      tool_choice: { type: "function", name: longName },
-    };
-
-    const out = ex.transformRequest("muse-spark-1.2-contributor", body, true, {});
-
-    expect(out.tools[0].name).toHaveLength(64);
-    expect(out.input.find((item) => item.type === "function_call").name).toHaveLength(64);
-    expect(out.tool_choice).toEqual({ type: "function", name: out.tools[0].name });
-  });
-
   it("strips prior-turn reasoning items carrying encrypted_content from input", () => {
     const ex = new OpenCodeGoExecutor();
     const body = {
@@ -164,6 +159,29 @@ describe("OpenCodeGoExecutor routing + sanitization", () => {
     expect(out.input.map((i) => i.type)).toEqual(["message", "function_call", "function_call_output"]);
   });
 });
+
+
+  it("caps Responses tool declarations and calls at 64 while preserving named choice", () => {
+    const ex = new OpenCodeGoExecutor();
+    if (ex.config.quirks) ex.config.quirks.forceAutoToolChoiceModels = [];
+    else ex.config.quirks = { forceAutoToolChoiceModels: [] };
+    const longName = `tool-${"x".repeat(100)}`;
+    const body = {
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { type: "function_call", name: longName, call_id: "c1", arguments: "{}" },
+      ],
+      tools: [{ type: "function", name: longName, parameters: { type: "object", properties: {} } }],
+      tool_choice: { type: "function", name: longName },
+    };
+
+    const out = ex.transformRequest("muse-spark-1.2-contributor", body, true, {});
+
+    expect(out.tools[0].name).toHaveLength(64);
+    expect(out.input.find((item) => item.type === "function_call").name).toHaveLength(64);
+    expect(out.tool_choice).toEqual({ type: "function", name: out.tools[0].name });
+  });
 
 describe("chat/claude clients translate to Responses without breaking tools", () => {
   const tricky = { cmd: "echo \"hi\"\nnewline\ttab\\slash", emoji: "🎉 café naïve", nested: { a: [1, "x'y"] } };

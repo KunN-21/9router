@@ -6,10 +6,8 @@ import { FORMATS } from "../../open-sse/translator/formats.js";
 import { OpenCodeExecutor } from "../../open-sse/executors/opencode.js";
 import "../translator/registerAll.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
-import { applyThinking } from "../../open-sse/translator/concerns/thinkingUnified.js";
 
 const MODEL = "muse-spark-1.2-contributor-free";
-const MODEL_13 = "muse-spark-1.3-contributor-free";
 const PROVIDER = "opencode";
 
 const input = [{
@@ -34,14 +32,11 @@ describe("OpenCode Free Muse Spark thinking", () => {
         contextWindow: 1048576,
         maxOutput: 131072,
       });
-      // Exact 1.3 id cannot disable (thinkingCanDisable:false → no "none");
-      // 1.2 and future pattern-matched ids keep the openai default with "none".
-      const expectNone = m !== "muse-spark-1.3-contributor-free";
-      expect(getThinkingLevels(PROVIDER, m)).toEqual(
-        expectNone
-          ? ["none", "minimal", "low", "medium", "high", "xhigh"]
-          : ["minimal", "low", "medium", "high", "xhigh"],
-      );
+      if (m === "muse-spark-1.3-contributor-free") {
+        expect(getThinkingLevels(PROVIDER, m)).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+      } else {
+        expect(getThinkingLevels(PROVIDER, m)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
+      }
       expect(getModelTargetFormat("oc", m)).toBe(FORMATS.OPENAI_RESPONSES);
       expect(getModelTargetFormat("opencode", m)).toBe(FORMATS.OPENAI_RESPONSES);
       expect(getModelTargetFormat("openrouter", m)).toBeNull();
@@ -65,6 +60,39 @@ describe("OpenCode Free Muse Spark thinking", () => {
     expect(out.max_tokens).toBeUndefined();
   });
 
+  it("routes Union Alpha through Anthropic Messages", () => {
+    const caps = getCapabilitiesForModel(PROVIDER, "union-alpha");
+    expect(caps.vision).toBe(true);
+    expect(caps.contextWindow).toBe(262144);
+    expect(caps.maxOutput).toBe(131072);
+
+    const executor = new OpenCodeExecutor();
+
+    expect(getModelTargetFormat("oc", "union-alpha")).toBe(FORMATS.CLAUDE);
+    const url = executor.buildUrl("union-alpha");
+    expect(url).toBe("https://opencode.ai/zen/v1/messages");
+    expect(executor.buildHeaders({}, true, url)).toMatchObject({
+      "anthropic-version": "2023-06-01",
+    });
+    expect(executor.buildHeaders({}, true, executor.buildUrl("big-pickle")))
+      .not.toHaveProperty("anthropic-version");
+
+    const translated = translateRequest(
+      FORMATS.OPENAI,
+      FORMATS.CLAUDE,
+      "union-alpha",
+      { messages: [{ role: "user", content: "ping" }], max_tokens: 1 },
+      false,
+      {},
+      PROVIDER,
+    );
+    expect(translated).toMatchObject({
+      model: "union-alpha",
+      messages: [{ role: "user", content: [{ type: "text", text: "ping" }] }],
+      max_tokens: 1,
+    });
+  });
+
   it("leaves the other free models on Chat Completions", () => {
     const executor = new OpenCodeExecutor();
     const body = { messages: [{ role: "user", content: "hi" }], max_tokens: 1024 };
@@ -72,18 +100,6 @@ describe("OpenCode Free Muse Spark thinking", () => {
     expect(executor.buildUrl("big-pickle")).toBe("https://opencode.ai/zen/v1/chat/completions");
     expect(body.max_tokens).toBe(1024);
     expect(body.max_output_tokens).toBeUndefined();
-  });
-
-  it("recognizes the 1.3 free id (plain and with a suffix) on /responses with the same cap/reasoning logic", () => {
-    const executor = new OpenCodeExecutor();
-    const target = executor.buildUrl(MODEL_13);
-    expect(target).toBe("https://opencode.ai/zen/v1/responses");
-    expect(executor.buildUrl(`${MODEL_13}(high)`)).toBe(target);
-    const body = { max_tokens: 4096, reasoning_effort: "high" };
-    executor.transformRequest(MODEL_13, body, true, {});
-    expect(body.max_output_tokens).toBe(4096);
-    expect(body.reasoning).toEqual({ effort: "high", summary: "auto" });
-    expect(body.max_tokens).toBeUndefined();
   });
 
   it("translates Chat Completions max thinking into a Responses request", () => {
@@ -112,27 +128,6 @@ describe("OpenCode Free Muse Spark thinking", () => {
     expect(out.max_tokens).toBeUndefined();
   });
 
-  it("clamps 1.3 none/off suffix intent to minimal instead of sending a disable the API 400s on", () => {
-    for (const suffix of ["none", "off"]) {
-      const body = {};
-      applyThinking("openai-responses", `${MODEL_13}(${suffix})`, body, PROVIDER);
-      // 1.3 (thinkingCanDisable:false) must NOT emit a "none" effort; it clamps to the floor.
-      expect(body.reasoning_effort).toBe("minimal");
-      expect(body.reasoning).toBeUndefined();
-      expect(body.thinking).toBeUndefined();
-    }
-  });
-
-  it.each([
-    { reasoning_effort: "none" },
-    { reasoning: { effort: "none" } },
-  ])("clamps body-field 1.3 disable intent (%o) to minimal — no disable shape on the wire", (fields) => {
-    const body = { ...fields };
-    applyThinking("openai-responses", MODEL_13, body, PROVIDER);
-    expect(body.reasoning_effort).toBe("minimal");
-    expect(body.reasoning).toBeUndefined();
-    expect(body.thinking).toBeUndefined();
-  });
   it("routes muse-spark-1.3-contributor-free and future Muse Spark models to Responses API", () => {
     const executor = new OpenCodeExecutor();
     const futureModel = "muse-spark-1.4-contributor-free";
@@ -228,25 +223,25 @@ describe("OpenCode Free Muse Spark thinking", () => {
       {
         type: "function",
         name: "bash",
-        description: "OpenCode built-in bash tool",
+        description: "This tool is currently unavailable and must not be used.",
         parameters: { type: "object", properties: {} },
       },
       {
         type: "function",
         name: "glob",
-        description: "OpenCode built-in glob tool",
+        description: "This tool is currently unavailable and must not be used.",
         parameters: { type: "object", properties: {} },
       },
       {
         type: "function",
         name: "grep",
-        description: "OpenCode built-in grep tool",
+        description: "This tool is currently unavailable and must not be used.",
         parameters: { type: "object", properties: {} },
       },
       {
         type: "function",
         name: "read",
-        description: "OpenCode built-in read tool",
+        description: "This tool is currently unavailable and must not be used.",
         parameters: { type: "object", properties: {} },
       },
     ]);

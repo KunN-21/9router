@@ -29,6 +29,18 @@ describe("OpenCode Go model catalog", () => {
   });
 });
 
+describe("OpenCode Go thinking-suffix model lookup", () => {
+  it("preserves Responses routing for gpt-5.6-luna thinking variants", () => {
+    expect(getModelSupportedFormats("opencode-go", "gpt-5.6-luna(high)")).toEqual(["openai-responses"]);
+    expect(getModelTargetFormat("opencode-go", "gpt-5.6-luna(high)")).toBe("openai-responses");
+  });
+
+  it("preserves Responses routing for grok-4.6 thinking variants", () => {
+    expect(getModelSupportedFormats("opencode-go", "grok-4.6(high)")).toEqual(["openai-responses"]);
+    expect(getModelTargetFormat("opencode-go", "grok-4.6(high)")).toBe("openai-responses");
+  });
+});
+
 describe("OpenCode Go per-model supportedFormats", () => {
   it("declares Muse Spark 1.2 Contributor as Responses-only", () => {
     const ids = (PROVIDER_MODELS["opencode-go"] || []).map((m) => m.id);

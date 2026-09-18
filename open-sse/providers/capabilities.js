@@ -53,7 +53,7 @@ export const DEFAULT_CAPABILITIES = {
   tools: true,          // function / tool calling
   reasoning: false,     // thinking / reasoning
   // thinking wire format (only meaningful when reasoning:true). null → derive from transport.format.
-  // enum: openai|openai-low-high-max|claude-adaptive|claude-budget|gemini-level|gemini-budget|zai|qwen|deepseek|kimi|minimax|hunyuan|step
+  // enum: openai|claude-adaptive|claude-budget|gemini-level|gemini-budget|zai|qwen|deepseek|kimi|minimax|hunyuan|step
   thinkingFormat: null,
   thinkingCanDisable: true,  // false → model cannot turn thinking off (clamp to min instead of disable)
   thinkingRange: null,       // { min, max } for budget formats; null = no clamp
@@ -77,19 +77,6 @@ const SERVICE_KIND_CAPABILITIES = {
 export function capabilitiesFromServiceKind(kind) {
   return SERVICE_KIND_CAPABILITIES[kind] || null;
 }
-
-// OpenCode Zen Ox Alpha Free — image input + always-thinking reasoning
-// (models.dev: reasoning_options [low, high, max]). Shared by the four
-// provider/id pairs below; never exposed globally so other providers'
-// same-named models keep pattern/default caps.
-const OX_ALPHA_CAPABILITIES = {
-  vision: true,
-  reasoning: true,
-  thinkingFormat: "openai-low-high-max",
-  thinkingCanDisable: false,
-  contextWindow: 1000000,
-  maxOutput: 131072,
-};
 
 /**
  * Canonical exact-id overrides — used for exceptions that patterns would
@@ -129,6 +116,16 @@ export const MODEL_CAPABILITIES = {
   // DeepSeek's first V4 model with image input; text limits match V4-Flash.
   "deepseek-v4-flash-vision-exp": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
 
+  // DeepSeek V4.1-Flash is natively multimodal — models.dev lists
+  // opencode-go/deepseek-v4.1-flash with modalities.input ["text","image"] — and upstream
+  // the retired v4-flash / vision-exp ids route to it, so the live V4.1 ids carry the
+  // same image capability as the exp id above. "deepseek-flash" is the GA id on the
+  // DeepSeek API; it previously fell through to the generic *deepseek* pattern, whose
+  // 128K/64K limits are kept here. The repeated fields are deliberate: an exact entry
+  // short-circuits the pattern table, so a vision-only delta would drop them.
+  "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
+  "deepseek-flash":      { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 128000, maxOutput: 64000 },
+
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
   "vision-model":      { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 },
   "coder-model":       { reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 },
@@ -140,13 +137,13 @@ export const MODEL_CAPABILITIES = {
   "kimi-for-coding-highspeed": { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 65536 },
   "kimi-k2.7-code":    { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 65536 },
   "kimi-k2.7-code-highspeed": { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 65536 },
-
-  // OpenCode Free Muse Spark — OpenAI Responses reasoning supports up to xhigh.
-  "muse-spark-1.2-contributor-free": { reasoning: true, thinkingFormat: "openai", contextWindow: 1048576, maxOutput: 131072 },
-  // Muse Spark 1.3 (Zen free + Go): models.dev lists reasoning_options
-  // minimal..xhigh only — "none" 400s, so thinking cannot be disabled.
-  "muse-spark-1.3-contributor-free": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+  // OpenCode Free Muse Spark — multimodal (text+image per models.dev meta/muse-spark)
+  // via OpenAI Responses input_image; reasoning supports up to xhigh.
+  "muse-spark-1.2-contributor-free": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1048576, maxOutput: 131072 },
+  "muse-spark-1.3-contributor-free": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
   "muse-spark-1.3-contributor": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+  // OpenCode Free Union Alpha — multimodal (text+vision), 262K context, 131K max output
+  "union-alpha": { vision: true, contextWindow: 262144, maxOutput: 131072 },
 };
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
@@ -230,6 +227,13 @@ export const PROVIDER_CAPABILITIES = {
     // contract). maxOutput 128000 per the server's product-config payload.
     "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 128000 },
   },
+  // CodeBuddy intl — same gateway catalog as CN, so deepseek-v4.1-flash mirrors
+  // the codebuddy-cn entry (the openai-style reasoning_effort format matters:
+  // the generic *deepseek-v4* pattern would otherwise pick the vendor-native
+  // "deepseek" thinking shape, which the CodeBuddy gateway does not accept).
+  "codebuddy-intl": {
+    "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 128000 },
+  },
   // Qoder — upstream exposes opaque internal ids (dfmodel, kmodel, …); the
   // registry `name` is display-only and capability lookup matches on the raw
   // id, so every qoder model would fall through to DEFAULT_CAPABILITIES
@@ -267,19 +271,15 @@ export const PROVIDER_CAPABILITIES = {
     "laguna-s-2.1":  { reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 32000 },
     "laguna-xs-2.1": { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 32000 },
   },
-  // OpenCode Zen Ox Alpha Free — full ids (opencode/opencode-go, seen by runtime
-  // request handling) + routed aliases (oc/ocg, read raw by combo reorderByCapabilities).
-  "opencode": {
-    "x-preview-f-free": OX_ALPHA_CAPABILITIES,
-  },
-  "oc": {
-    "x-preview-f-free": OX_ALPHA_CAPABILITIES,
-  },
-  "opencode-go": {
-    "ox-alpha-free": OX_ALPHA_CAPABILITIES,
-  },
-  "ocg": {
-    "ox-alpha-free": OX_ALPHA_CAPABILITIES,
+  // Ollama Cloud — the generic *deepseek-v4* pattern misses the vision badge
+  // the library page publishes for this model (text+image in, 1M context).
+  // ponytail: thinkingFormat stays "deepseek" to preserve today's body shape;
+  // Ollama's native toggle is the top-level `think` field (bool or
+  // low/medium/high/max), which no format in thinkingUnified.js emits yet —
+  // openai-to-ollama.js drops it. Wire a "think" format when thinking on
+  // Ollama Cloud is actually needed.
+  "ollama": {
+    "deepseek-v4.1-flash:cloud": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
   },
 };
 
@@ -379,7 +379,11 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*glm*",           caps: { reasoning: true, thinkingFormat: "zai", contextWindow: 200000 } },
 
   // ── DeepSeek (thinking.enabled + reasoning_effort; r1 = thinking-only) ─
-  { pattern: "*deepseek-v4*",   caps: { reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 } },
+  // v4.1+ has real image input (probed live on Alibaba MaaS: correct color
+  // read from a PNG). v4-pro / v4-flash-0731 accept image blocks but ignore
+  // them (answered "Unknown"), so vision stays scoped to v4.* dotted releases.
+  { pattern: "*deepseek-v4.*",  caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*deepseek-v4*",   caps: { reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, contextWindow: 1000000, maxOutput: 384000 } },
   { pattern: "*reasoner*",      caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
   { pattern: "*deepseek-r*",    caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
   { pattern: "*deepseek-chat*", caps: { contextWindow: 128000 } },
@@ -444,14 +448,27 @@ const MODALITY_KEYS = ["vision", "pdf", "audioInput", "videoInput"];
 
 // Catalog lookups, installed by the server at startup. Left as no-ops in the
 // browser bundle, where there is no file to read.
+//
+// The server bundles this module into every route chunk that needs it, and each
+// copy carries its own module state, so an install landing in the copy the
+// startup hook imported stays invisible to the copy resolving requests. The slot
+// lives on globalThis instead; the local binding is the fast path.
 let catalogSource = null;
 
 /**
  * Install the synced catalog reader (server only).
- * @param {{ getModalities: Function, getLimits: Function } | null} source
+ * @param {{ getModalities: (provider: string, model: string) => object|null,
+ *           getLimits: (provider: string, model: string) => object|null } | null} source
  */
 export function setCatalogSource(source) {
   catalogSource = source;
+  if (typeof globalThis !== "undefined") globalThis.__9rCatalogSource = source;
+}
+
+function getCatalogSource() {
+  if (catalogSource) return catalogSource;
+  if (typeof globalThis === "undefined") return null;
+  return (catalogSource = globalThis.__9rCatalogSource || null);
 }
 
 // Apply the synced catalog + name heuristic on top of a table-resolved result.
@@ -460,15 +477,16 @@ export function setCatalogSource(source) {
 function refine(base, provider, model) {
   const result = { ...DEFAULT_CAPABILITIES, ...base };
 
-  if (catalogSource) {
-    const modalities = catalogSource.getModalities(model);
+  const source = getCatalogSource();
+  if (source) {
+    const modalities = source.getModalities(provider, model);
     if (modalities) {
       for (const key of MODALITY_KEYS) {
         if (modalities[key] === true) result[key] = true;
       }
     }
 
-    const limits = catalogSource.getLimits(provider, model);
+    const limits = source.getLimits(provider, model);
     if (limits) {
       if (limits.contextWindow > 0) result.contextWindow = limits.contextWindow;
       if (limits.maxOutput > 0) result.maxOutput = limits.maxOutput;
@@ -480,28 +498,81 @@ function refine(base, provider, model) {
   return result;
 }
 
+// Mirrors Command Code CLI `isKnownTextOnlyModel` (no image input). New models
+// default to vision; only this denylist stays text-only.
+const COMMANDCODE_TEXT_ONLY = new Set([
+  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-flash-fast",
+  "zai-org/glm-5.3",
+  "zai-org/glm-5.2",
+  "zai-org/glm-5.2-fast",
+  "zai-org/glm-5.1",
+  "zai-org/glm-5",
+  "minimaxai/minimax-m2.7",
+  "minimax/minimax-m2.7-free",
+  "minimaxai/minimax-m2.5",
+  "xiaomi/mimo-v2.5-pro",
+  "qwen/qwen3.6-max-preview",
+  "qwen/qwen3.7-max",
+  "meituan/longcat-2.0:free",
+  "stepfun/step-3.5-flash",
+  "tencent/hy4-preview",
+  "tencent/hy3",
+  "tencent/hy3-paid",
+  "nvidia/nemotron-3-ultra-550b-a55b",
+  "poolside/laguna-s-2.1-free",
+  "inclusionai/ling-3.0-flash-free",
+  "inclusionai/ling-3.0-flash-sante:free",
+]);
+
+function isCommandCodeTextOnly(model) {
+  const key = String(model || "").toLowerCase();
+  if (COMMANDCODE_TEXT_ONLY.has(key)) return true;
+  for (const id of COMMANDCODE_TEXT_ONLY) {
+    const base = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    if (key === base || key.endsWith("/" + base)) return true;
+  }
+  return false;
+}
 export function getCapabilitiesForModel(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
-  // Strip a trailing thinking suffix "model(value)" so lookups resolve the base id.
-  const normalizedModel = model.replace(/\([^()]+\)\s*$/, "").trim();
+
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
-  const baseModel = normalizedModel.includes("/") ? normalizedModel.split("/").pop() : normalizedModel;
+  const baseModel = model.includes("/") ? model.split("/").pop() : model;
+
+  // CommandCode wire is /alpha/generate for every model. Family patterns
+  // (deepseek-v4 → thinkingFormat:deepseek, vision:false) must not win here.
+  if (provider === "commandcode" || provider === "cmc") {
+    const providerCaps = PROVIDER_CAPABILITIES.commandcode;
+    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
+    if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
+    return {
+      ...DEFAULT_CAPABILITIES,
+      reasoning: true,
+      thinkingFormat: "commandcode",
+      thinkingEffortSupported: true,
+      vision: !isCommandCodeTextOnly(model),
+      contextWindow: 1000000,
+      maxOutput: 384000,
+    };
+  }
 
   // 1. Provider-specific override
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];
-    if (providerCaps?.[normalizedModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[normalizedModel] };
+    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
     if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
   }
 
   // 2. Canonical exact
   if (MODEL_CAPABILITIES[baseModel]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
-  if (MODEL_CAPABILITIES[normalizedModel]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[normalizedModel] };
+  if (MODEL_CAPABILITIES[model]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
 
   // 3. Pattern match (first match wins), refined by catalog + name heuristic
   for (const { pattern, caps } of PATTERN_CAPABILITIES) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, normalizedModel)) {
-      return refine(caps, provider, normalizedModel);
+    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+      return refine(caps, provider, model);
     }
   }
 

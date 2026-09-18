@@ -34,7 +34,7 @@ export function claudeToOpenAIRequest(model, body, stream) {
     const systemContent = Array.isArray(body.system)
       ? body.system.map(s => stripAnthropicBillingHeader(s.text || "")).filter(Boolean).join("\n")
       : stripAnthropicBillingHeader(body.system);
-    
+
     if (systemContent) {
       result.messages.push({
         role: ROLE.SYSTEM,
@@ -100,7 +100,7 @@ function fixMissingToolResponsesOpenAI(messages) {
     const msg = messages[i];
     if (msg.role === ROLE.ASSISTANT && msg.tool_calls && msg.tool_calls.length > 0) {
       const toolCallIds = msg.tool_calls.map(tc => tc.id);
-      
+
       // Collect all tool response IDs that IMMEDIATELY follow this assistant message
       const respondedIds = new Set();
       let insertPosition = i + 1;
@@ -113,10 +113,10 @@ function fixMissingToolResponsesOpenAI(messages) {
           break;
         }
       }
-      
+
       // Find missing responses and insert them
       const missingIds = toolCallIds.filter(id => !respondedIds.has(id));
-      
+
       if (missingIds.length > 0) {
         const missingResponses = missingIds.map(id => ({
           role: ROLE.TOOL,
@@ -157,7 +157,7 @@ function convertClaudeMessage(msg) {
   }
 
   const role = msg.role === ROLE.USER || msg.role === ROLE.TOOL ? ROLE.USER : ROLE.ASSISTANT;
-  
+
   // Simple string content
   if (typeof msg.content === "string") {
     return { role, content: msg.content };
@@ -197,36 +197,41 @@ function convertClaudeMessage(msg) {
           });
           break;
 
-        case CLAUDE_BLOCK.TOOL_RESULT:
+        case CLAUDE_BLOCK.TOOL_RESULT: {
           let resultContent = "";
+          const resultImages = [];
           if (typeof block.content === "string") {
             resultContent = block.content;
           } else if (Array.isArray(block.content)) {
-            // Text parts pass through; binary blocks (screenshots, PDFs) become
-            // short placeholders. Dumping raw base64 into a text output burns
-            // ~100KB+ tokens per screenshot and trips upstream validators
-            // (opencode Console 400s on giant embedded image blobs).
-            const parts = [];
             for (const c of block.content) {
-              if (c?.type === CLAUDE_BLOCK.TEXT && typeof c.text === "string") {
-                parts.push(c.text);
-              } else if (c?.type === CLAUDE_BLOCK.IMAGE) {
-                parts.push(describeOmittedMedia(c.source?.media_type || "image", c.source?.data));
-              } else if (c && typeof c === "object" && c.type && c.type !== CLAUDE_BLOCK.TEXT) {
-                parts.push(`Omitted ${c.type} block from tool result to save context.`);
+              if (c?.type === CLAUDE_BLOCK.IMAGE && c.source?.type === "base64") {
+                resultImages.push({
+                  type: OPENAI_BLOCK.IMAGE_URL,
+                  image_url: { url: encodeDataUri(c.source.media_type, c.source.data) }
+                });
               }
             }
-            resultContent = parts.join("\n") || "[empty tool result]";
+            const textOnly = block.content.filter(c => c?.type === CLAUDE_BLOCK.TEXT);
+            resultContent = textOnly.map(c => c.text).join("\n")
+              || (resultImages.length ? "" : JSON.stringify(block.content));
           } else if (block.content) {
             resultContent = JSON.stringify(block.content);
           }
-          
+
           toolResults.push({
             role: ROLE.TOOL,
             tool_call_id: block.tool_use_id,
             content: resultContent
           });
+          // The OpenAI tool role is text-only, so a screenshot or any other image a
+          // tool returned would otherwise vanish. Hand it to the model in the user
+          // turn that follows the tool messages, tagged with the call it came from.
+          if (resultImages.length) {
+            parts.push({ type: OPENAI_BLOCK.TEXT, text: `[Image from tool result ${block.tool_use_id}]` });
+            parts.push(...resultImages);
+          }
           break;
+        }
       }
     }
 
@@ -255,7 +260,7 @@ function convertClaudeMessage(msg) {
         content: collapseTextParts(parts)
       };
     }
-    
+
     // Empty content array
     if (msg.content.length === 0) {
       return { role, content: "" };
@@ -265,19 +270,11 @@ function convertClaudeMessage(msg) {
   return null;
 }
 
-// Short placeholder for a binary tool-result block (screenshot, PDF). Never
-// includes the raw payload — leans on the leading word so the output never
-// looks like a raw JSON array dump.
-function describeOmittedMedia(mediaType, data) {
-  const size = typeof data === "string" ? data.length : 0;
-  return `Omitted image (${mediaType}, ${size} chars base64) from tool result to save context.`;
-}
-
 // Convert tool choice
 function convertToolChoice(choice) {
   if (!choice) return "auto";
   if (typeof choice === "string") return choice;
-  
+
   switch (choice.type) {
     case "auto": return "auto";
     case "any": return "required";
