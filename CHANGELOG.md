@@ -1,4 +1,9 @@
-# v0.5.79 (2026-09-18)
+# v0.5.81-local.1
+
+- Merge PR #4142 `fix(opencode): rename free-tier tool quartet so Claude Code CLI stops getting 403` (560bed3, yxxrn) — `opencodeFingerprint.js` rename quartet case-variants to lowercase, drop pure duplicates, retarget explicit `tool_choice`, restore on all three response paths via `WeakMap`; measured 43 caps tools 403→200, no lowercase leak.
+- Bump from 0.5.79-local.1 to 0.5.81-local.1 tracking upstream 23ae82d8 (v0.5.81) header.
+
+# v0.5.81 (2026-09-18)
 
 ## Features
 - **Xiaomi MiMo**: merge MiMo Desktop support into `xiaomi-mimo` with dual auth (API key + Desktop/OAuth session), Preview models support, and encrypted-callback OAuth flow
