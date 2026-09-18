@@ -14,6 +14,7 @@ import {
   coerceResponsesArguments,
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
+import { applyFingerprintTools } from "../utils/opencodeFingerprint.js";
 
 function safeUpstreamUrl(url) {
   try {
@@ -502,7 +503,8 @@ export class OpenCodeExecutor extends BaseExecutor {
     // Zen rejects non-streaming requests on free models with 403 FreeTierError;
     // always stream upstream and let the handler layer aggregate for non-stream clients.
     if (body && typeof body === "object") body.stream = true;
-    if (isResponsesModel(model || body?.model) && body && typeof body === "object") {
+    const responsesModel = isResponsesModel(model || body?.model);
+    if (responsesModel) {
       // ponytail: chi model da xac nhan auto-only; mo allowlist khi co bang chung.
       if ("tool_choice" in body && body.tool_choice !== "auto"
         && this.config.quirks?.forceAutoToolChoiceModels?.includes(baseModelId(model))) {
@@ -531,6 +533,11 @@ export class OpenCodeExecutor extends BaseExecutor {
       ensureChatFingerprintTools(body);
       if (!hadTools && !body.tool_choice) body.tool_choice = "none";
     }
+    // The free-tier gate fingerprints its official client through the case of the
+    // file-search quartet in the body, so caller spellings like "Bash" must be
+    // renamed (not supplemented) and restored again on the response. See
+    // utils/opencodeFingerprint.js for the measured 403/500/200 matrix.
+    applyFingerprintTools(body, responsesModel);
     return injectReasoningContent({ provider: this.provider, model, body });
   }
 
