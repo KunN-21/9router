@@ -90,6 +90,9 @@ function sanitizeResponsesItems(body) {
   if (!Array.isArray(body.input)) return;
   body.input = body.input.filter((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return true;
+    if (item.type === "reasoning") return false;
+    delete item.encrypted_content;
+    delete item.reasoning_encrypted_content;
     if (item.type === "function_call") {
       if (!item.name || typeof item.name !== "string" || item.name.trim() === "") return false;
       item.name = item.name.trim().slice(0, MAX_TOOL_NAME_LEN);

@@ -1,3 +1,7 @@
+# 0.5.75-local.4
+
+- OpenCode Free: complete free-tier client fingerprint to stop recurring 403 (force stream, file-search tool quartet injection, strip prior encrypted reasoning items).
+
 # 0.5.75-local.3
 
 - OpenCode Free: resolve 403 FreeTierError using canonical session format (`ses_` + 12 hex + 14 Base62) and valid User-Agent (`opencode/1.18.31`).

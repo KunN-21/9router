@@ -6,6 +6,12 @@ import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { applyOcEgress, flipOcEgress } from "../utils/ocEgress.js";
 import { isMuseSparkModel } from "../providers/models/helpers.js";
+import {
+  normalizeResponsesInput,
+  clampResponsesCallId,
+  coerceResponsesArguments,
+  coerceResponsesOutput,
+} from "../translator/formats/responsesApi.js";
 
 const OPENCODE_UA = "opencode/1.18.31";
 const MAX_SESSION_LENGTH = 256;
@@ -13,6 +19,8 @@ const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeSession";
 export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const MAX_TOOL_NAME_LEN = 128;
+const OPENCODE_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read"];
 
 function hasValidOpencodeVersion(ua) {
   const m = String(ua || "").match(/opencode\/(\d+)\.(\d+)(?:\.(\d+))?/i);
@@ -158,6 +166,114 @@ function normalizeOpencodeReasoning(model, body) {
   delete body.reasoning_effort;
 }
 
+function normalizeResponsesTools(body) {
+  if (!Array.isArray(body.tools)) return;
+  const validNames = new Set();
+  body.tools = body.tools.filter((tool) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
+    const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : null;
+    const rawName = typeof tool.name === "string" ? tool.name : (typeof fn?.name === "string" ? fn.name : "");
+    const name = rawName.trim();
+    if (!name) return false;
+    const description = typeof tool.description === "string" ? tool.description : (typeof fn?.description === "string" ? fn.description : "");
+    let parameters = (tool.parameters && typeof tool.parameters === "object" && !Array.isArray(tool.parameters))
+      ? tool.parameters
+      : (fn?.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters) ? fn.parameters : { type: "object", properties: {} });
+    if (parameters.type === "object" && !parameters.properties) parameters = { ...parameters, properties: {} };
+    for (const k of Object.keys(tool)) delete tool[k];
+    tool.type = "function";
+    tool.name = name.slice(0, MAX_TOOL_NAME_LEN);
+    if (description) tool.description = description;
+    tool.parameters = parameters;
+    validNames.add(tool.name);
+    return true;
+  });
+  if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
+    if (body.tool_choice.type === "function") {
+      const n = typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "";
+      if (!n || !validNames.has(n)) delete body.tool_choice;
+    }
+  }
+}
+
+function toolNameOf(tool) {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return "";
+  const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : null;
+  const raw = typeof tool.name === "string" ? tool.name : (typeof fn?.name === "string" ? fn.name : "");
+  return raw.trim();
+}
+
+function ensureChatFingerprintTools(body) {
+  if (!body || typeof body !== "object") return;
+  const present = new Set();
+  if (Array.isArray(body.tools)) {
+    for (const tool of body.tools) {
+      const name = toolNameOf(tool);
+      if (name) present.add(name);
+    }
+  } else {
+    body.tools = [];
+  }
+  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
+    if (present.has(name)) continue;
+    body.tools.push({
+      type: "function",
+      function: {
+        name,
+        description: `OpenCode built-in ${name} tool`,
+        parameters: { type: "object", properties: {} },
+      },
+    });
+    present.add(name);
+  }
+}
+
+function ensureResponsesFingerprintTools(body) {
+  if (!body || typeof body !== "object") return;
+  const present = new Set();
+  if (Array.isArray(body.tools)) {
+    for (const tool of body.tools) {
+      const name = toolNameOf(tool);
+      if (name) present.add(name);
+    }
+  } else {
+    body.tools = [];
+  }
+  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
+    if (present.has(name)) continue;
+    body.tools.push({
+      type: "function",
+      name,
+      description: `OpenCode built-in ${name} tool`,
+      parameters: { type: "object", properties: {} },
+    });
+    present.add(name);
+  }
+}
+
+function sanitizeResponsesItems(body) {
+  if (!Array.isArray(body.input)) return;
+  body.input = body.input.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return true;
+    if (item.type === "reasoning") return false;
+    delete item.encrypted_content;
+    delete item.reasoning_encrypted_content;
+    if (item.type === "function_call") {
+      if (!item.name || typeof item.name !== "string" || item.name.trim() === "") return false;
+      item.name = item.name.trim().slice(0, MAX_TOOL_NAME_LEN);
+      item.call_id = clampResponsesCallId(item.call_id);
+      item.arguments = coerceResponsesArguments(item.arguments);
+      return true;
+    }
+    if (item.type === "function_call_output") {
+      item.call_id = clampResponsesCallId(item.call_id);
+      item.output = coerceResponsesOutput(item.output);
+      return true;
+    }
+    return true;
+  });
+}
+
 export class OpenCodeExecutor extends BaseExecutor {
   constructor() {
     super("opencode", PROVIDERS.opencode);
@@ -175,7 +291,15 @@ export class OpenCodeExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     if (body && typeof body === "object" && model && !body.model) body.model = model;
-    if (isResponsesModel(model) && body && typeof body === "object") {
+    if (body && typeof body === "object") {
+      body.stream = true;
+    }
+    if (isResponsesModel(model || body?.model) && body && typeof body === "object") {
+      const normalized = normalizeResponsesInput(body.input);
+      if (normalized) body.input = normalized;
+      if (!Array.isArray(body.input) || body.input.length === 0) {
+        body.input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "..." }] }];
+      }
       // ponytail: chỉ model đã xác nhận auto-only; mở allowlist khi có bằng chứng.
       if ("tool_choice" in body && body.tool_choice !== "auto"
         && this.config.quirks?.forceAutoToolChoiceModels?.includes(baseModelId(model))) {
@@ -188,6 +312,12 @@ export class OpenCodeExecutor extends BaseExecutor {
       delete body.max_tokens;
       delete body.max_completion_tokens;
       normalizeOpencodeReasoning(model, body);
+      body.store = false;
+      ensureResponsesFingerprintTools(body);
+      normalizeResponsesTools(body);
+      sanitizeResponsesItems(body);
+    } else if (body && typeof body === "object") {
+      ensureChatFingerprintTools(body);
     }
     return injectReasoningContent({ provider: this.provider, model, body });
   }
