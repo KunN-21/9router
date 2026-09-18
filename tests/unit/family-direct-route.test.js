@@ -44,18 +44,40 @@ describe("hashline edit normalize", () => {
 });
 
 describe("translator family direct branch", () => {
-  // ponytail: target VERTEX (no claude:vertex exact registered) — brief's
-  // GEMINI target collides with the claude:gemini family key, so exact direct
-  // fires pre-impl and RED is unobservable. Family branch ignores target.
-  it("family direct bypasses pivot for claude:gemini with gemini-3.8-flash", async () => {
+  // ponytail: key scoped by target (claude:{family}:{target}); uses a 3-part
+  // family key so no exact direct route collides. Upgrade path: real handler.
+  it("family direct bypasses pivot for claude→GEMINI target key", async () => {
     const { translateRequest, register } = await import("../../open-sse/translator/index.js");
     const { FORMATS } = await import("../../open-sse/translator/formats.js");
     let directCalled = false;
-    register(FORMATS.CLAUDE, "gemini", (model, body) => { directCalled = true; body._directHit = true; return body; });
+    register("claude", "gemini:gemini", (model, body) => { directCalled = true; body._directHit = true; return body; });
     const body = { messages: [{ role: "user", content: "hi" }], tools: [] };
-    const out = translateRequest(FORMATS.CLAUDE, FORMATS.VERTEX, "gemini-3.8-flash", body, true, null, null, null, [], null, null);
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.GEMINI, "gemini-3.8-flash", body, true, null, null, null, [], null, null);
     assert.equal(directCalled, true);
     assert.equal(out._directHit, true);
+  });
+
+  it("family key does not hijack other targets (old 2-part key ignored, claude→KIRO exact direct runs)", async () => {
+    const { translateRequest, register } = await import("../../open-sse/translator/index.js");
+    const { FORMATS } = await import("../../open-sse/translator/formats.js");
+    let familyCalled = false;
+    register(FORMATS.CLAUDE, "muse-spark", () => { familyCalled = true; throw new Error("must not run"); });
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, "muse-spark-1.3-contributor-free", body, true, null, null, null, [], null, null);
+    assert.equal(familyCalled, false);
+    assert.ok(out?.conversationState, "exact claude:kiro direct route builds Kiro payload");
+  });
+
+  it("family handler throw falls back without throwing", async () => {
+    const { translateRequest, register } = await import("../../open-sse/translator/index.js");
+    const { FORMATS } = await import("../../open-sse/translator/formats.js");
+    register("claude", "gpt-family:openai", () => { throw new Error("boom"); });
+    const warnings = [];
+    const reqLogger = { warn: (...a) => warnings.push(a), logOpenAIRequest: () => {} };
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const out = translateRequest("claude", "openai", "gpt-astra-6-test", body, true, null, null, reqLogger, [], null, null);
+    assert.ok(out, "fallback returns result, no throw");
+    assert.ok(warnings.length >= 1, "fallback logs via reqLogger");
   });
 
   it("fallback pivot when no family match", async () => {

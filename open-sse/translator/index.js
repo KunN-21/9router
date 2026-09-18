@@ -88,12 +88,14 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     if (sourceFormat === FORMATS.CLAUDE) {
       const family = resolveFamily(model);
       if (family) {
-        const famFn = requestRegistry.get(`claude:${family.family}`);
+        const famFn = requestRegistry.get(`claude:${family.family}:${targetFormat}`);
         if (famFn) {
           try {
             result = famFn(model, result, stream, credentials);
             familyHandled = true;
-          } catch {
+          } catch (err) {
+            reqLogger?.warn?.("[translator] family direct fallback", { family: family.family, target: targetFormat, error: err?.message });
+            reqLogger?.logError?.(err, result);
             familyHandled = false;
           }
         }
