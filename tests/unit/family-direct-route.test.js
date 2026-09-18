@@ -1,6 +1,7 @@
 import { describe, it } from "vitest";
 import assert from "node:assert";
 import { resolveFamily, FAMILY_PROFILES } from "../../open-sse/providers/familyProfiles.js";
+import { normalizeEdit, hashAnchor } from "../../open-sse/translator/formats/hashline.js";
 
 describe("family profile registry", () => {
   it("resolveFamily matches version-agnostic", () => {
@@ -25,5 +26,19 @@ describe("family profile registry", () => {
   it("baseModelId strips thinking suffix", () => {
     assert.match(resolveFamily("gemini-3.8-flash(max)")?.family, /gemini/);
     assert.equal(resolveFamily("muse-spark-1.3-contributor-free (xhigh)")?.family, "muse-spark");
+  });
+});
+
+describe("hashline edit normalize", () => {
+  it("normalizeEdit trims trailing ws and CRLF fail-open", () => {
+    assert.equal(normalizeEdit("hello   \r\n  "), "hello");
+    assert.equal(normalizeEdit("line1  \nline2  "), "line1\nline2");
+    assert.equal(normalizeEdit(null), null);
+    assert.equal(normalizeEdit(123), 123);
+  });
+
+  it("hashAnchor slices to 64", () => {
+    assert.equal(hashAnchor("a".repeat(100)).length, 64);
+    assert.equal(hashAnchor("short"), "short");
   });
 });
