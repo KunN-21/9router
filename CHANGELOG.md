@@ -1,3 +1,8 @@
+# v0.5.81-local.4
+
+- Fix Muse/Responses tool call arguments loss: resolve `response.function_call_arguments.delta` across `call_id`, `item_id`, and `fc_` prefixes so parallel tool calls (`Read`, etc.) do not collapse into empty `{}` arguments (`InputValidationError: file_path expected as string but provided as unknown`).
+- Regression suites 46/46 pass.
+
 # v0.5.81-local.3
 
 - Fix Codex 400 `Invalid 'input[].name'` / `Invalid 'input[].id'`: sanitize tool names to `^[a-zA-Z0-9_-]+$` in `claude-to-responses.js` + `codex.js normalizeCodexTools` + `_toolNameMap` restore; strip non-`fc` function_call `id` (`2afed4f31`); map Read/Edit/Write/NotebookEdit path aliases in `openai-to-claude.js` response.
