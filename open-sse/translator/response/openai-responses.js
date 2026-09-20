@@ -471,7 +471,45 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     return null;
   }
 
-  // Function call started (standard function_call or custom_tool_call).
+  function recordToolChatIndex(state, data, item, idx) {
+  state.respToolChatIndex ??= new Map();
+  const registerKey = (k) => {
+    if (k !== undefined && k !== null && k !== "") {
+      state.respToolChatIndex.set(String(k), idx);
+    }
+  };
+  registerKey(item?.id);
+  registerKey(data?.item_id);
+  registerKey(item?.call_id);
+  registerKey(data?.call_id);
+  if (item?.call_id) registerKey(`fc_${item.call_id}`);
+  if (typeof item?.id === "string" && item.id.startsWith("fc_")) registerKey(item.id.slice(3));
+  if (typeof data?.item_id === "string" && data.item_id.startsWith("fc_")) registerKey(data.item_id.slice(3));
+  if (data?.output_index !== undefined) registerKey(`idx_${data.output_index}`);
+}
+
+function resolveToolChatIndex(state, data, item = null) {
+  if (!state.respToolChatIndex) return undefined;
+  const candidates = [
+    item?.id,
+    data?.item_id,
+    item?.call_id,
+    data?.call_id,
+    item?.call_id ? `fc_${item.call_id}` : null,
+    typeof item?.id === "string" && item.id.startsWith("fc_") ? item.id.slice(3) : null,
+    typeof data?.item_id === "string" && data.item_id.startsWith("fc_") ? data.item_id.slice(3) : null,
+    typeof data?.item_id === "string" && !data.item_id.startsWith("fc_") ? `fc_${data.item_id}` : null,
+    data?.output_index !== undefined ? `idx_${data.output_index}` : null,
+  ];
+  for (const c of candidates) {
+    if (c !== undefined && c !== null && c !== "" && state.respToolChatIndex.has(String(c))) {
+      return state.respToolChatIndex.get(String(c));
+    }
+  }
+  return undefined;
+}
+
+// Function call started (standard function_call or custom_tool_call).
   // Index is assigned here (not on done): attributing deltas by stream position
   // merges parallel calls into index 0 whenever upstream emits all addeds
   // before dones — the client then concatenates N JSON payloads into one
@@ -479,14 +517,10 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
   if (eventType === "response.output_item.added" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
     const item = data.item;
     state.currentToolCallId = item.call_id || fallbackToolCallId();
-    state.respToolChatIndex ??= new Map();
-    const key = item.id || data.item_id || state.currentToolCallId;
-    let idx;
-    if (key && state.respToolChatIndex.has(key)) {
-      idx = state.respToolChatIndex.get(key); // duplicate added (retry) — reuse
-    } else {
+    let idx = resolveToolChatIndex(state, data, item);
+    if (idx === undefined) {
       idx = state.toolCallIndex++;
-      if (key) state.respToolChatIndex.set(key, idx);
+      recordToolChatIndex(state, data, item, idx);
     }
 
     return buildChunk(
@@ -508,7 +542,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     const argsDelta = data.delta || "";
     if (!argsDelta) return null;
 
-    const known = data.item_id ? state.respToolChatIndex?.get(data.item_id) : undefined;
+    const known = resolveToolChatIndex(state, data);
     const idx = known ?? Math.max(0, (state.toolCallIndex || 1) - 1);
     state.respToolArgsEmitted ??= new Set();
     state.respToolArgsEmitted.add(idx);
@@ -522,8 +556,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
   // Index was assigned at added-time; nothing to advance. Some upstreams send
   // complete arguments only here (no deltas) — emit them once in that case.
   if (eventType === "response.output_item.done" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
-    const key = data.item?.id || data.item_id;
-    const idx = (key && state.respToolChatIndex?.get(key)) ?? Math.max(0, (state.toolCallIndex || 1) - 1);
+    const idx = resolveToolChatIndex(state, data, data.item) ?? Math.max(0, (state.toolCallIndex || 1) - 1);
     const fullArgs = data.item?.arguments;
     if (typeof fullArgs === "string" && fullArgs) {
       state.respToolArgsEmitted ??= new Set();
