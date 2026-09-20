@@ -1,3 +1,8 @@
+# v0.5.81-local.3
+
+- Fix Codex 400 `Invalid 'input[].name'` / `Invalid 'input[].id'`: sanitize tool names to `^[a-zA-Z0-9_-]+$` in `claude-to-responses.js` + `codex.js normalizeCodexTools` + `_toolNameMap` restore; strip non-`fc` function_call `id` (`2afed4f31`); map Read/Edit/Write/NotebookEdit path aliases in `openai-to-claude.js` response.
+- Regression suites 24/24 pass; provider/alias/oauth baselines byte-equal.
+
 # v0.5.81-local.2
 
 - Add direct claude translators bypassing lossy OpenAI pivot (`cd247d10f`, `89e519144`): `claude-to-gemini.js` (key `claude:gemini:gemini`), `claude-to-responses.js` (keys `claude:muse-spark:openai-responses`, `claude:gpt-family:openai-responses`); +1 import line each in `open-sse/translator/index.js`.
