@@ -28,8 +28,31 @@ function sanitizeToolArgs(toolName, argsJson) {
   const name = toolName.startsWith(CLAUDE_OAUTH_TOOL_PREFIX)
     ? toolName.slice(CLAUDE_OAUTH_TOOL_PREFIX.length)
     : toolName;
+  if (name === "Read" || name === "Edit" || name === "Write") sanitizeFileArgs(args);
+  if (name === "NotebookEdit") sanitizeNotebookArgs(args);
   if (name === "Read") sanitizeReadArgs(args);
   return JSON.stringify(args);
+}
+
+// Map common non-Claude model aliases (path, file, filepath, filename) to file_path
+function sanitizeFileArgs(args) {
+  if (!args || typeof args !== "object") return;
+  if (!args.file_path) {
+    const alias = args.path || args.filepath || args.file || args.filename || args.target;
+    if (typeof alias === "string" && alias.trim()) {
+      args.file_path = alias.trim();
+    }
+  }
+}
+
+function sanitizeNotebookArgs(args) {
+  if (!args || typeof args !== "object") return;
+  if (!args.notebook_path) {
+    const alias = args.path || args.filepath || args.file || args.file_path || args.filename;
+    if (typeof alias === "string" && alias.trim()) {
+      args.notebook_path = alias.trim();
+    }
+  }
 }
 
 function sanitizeReadArgs(args) {

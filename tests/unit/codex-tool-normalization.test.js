@@ -200,4 +200,42 @@ describe("CodexExecutor tool normalization", () => {
       },
     ]);
   });
+
+  it("sanitizes MCP tool names and strips non-fc function_call id", () => {
+    const executor = new CodexExecutor();
+    const body = {
+      model: "gpt-5.5",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        {
+          type: "function_call",
+          id: "call_01a0b85aa02272bf984b26435b56a120",
+          call_id: "call_01a0b85aa02272bf984b26435b56a120",
+          name: "mcp__plugin__my.tool:name",
+          arguments: "{}",
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          name: "mcp__plugin__my.tool:name",
+          description: "desc",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+      stream: true,
+    };
+
+    executor.transformRequest("gpt-5.5", body, true, {
+      connectionId: "test-codex-tools",
+      providerSpecificData: {},
+    });
+
+    const pat = /^[a-zA-Z0-9_-]+$/;
+    expect(body.tools[0].name).toMatch(pat);
+    const fc = body.input.find((i) => i.type === "function_call");
+    expect(fc.name).toMatch(pat);
+    expect(fc.id).toBeUndefined();
+    expect(fc.call_id).toBe("call_01a0b85aa02272bf984b26435b56a120");
+  });
 });

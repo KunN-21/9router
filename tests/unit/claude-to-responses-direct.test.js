@@ -33,4 +33,27 @@ describe("claude-to-responses direct", () => {
     const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, "muse-spark-1.3-contributor-free", hardBody(), true, null, null, null, [], null, null);
     assert.ok(!out.input, "family handler must not run for KIRO target");
   });
+
+  it("sanitizes MCP-style names to Codex pattern and restores them", () => {
+    const body = hardBody();
+    body.tools.push({ name: "mcp__plugin__my.tool:name", description: "m", input_schema: { type: "object", properties: {} } });
+    body.messages[1].content.push({ type: "tool_use", id: "toolu_mcp1", name: "mcp__plugin__my.tool:name", input: {} });
+    body.messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_mcp1", content: "done" }] });
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, "gpt-astra-6", body, true, null, null, null, [], null, null);
+    const pat = /^[a-zA-Z0-9_-]+$/;
+    for (const t of out.tools) assert.match(t.name, pat, `tool decl ${t.name}`);
+    for (const i of out.input.filter((x) => x.name)) assert.match(i.name, pat, `input ${i.type} ${i.name}`);
+    assert.ok(out._toolNameMap?.get("mcp__plugin__my_tool_name") === "mcp__plugin__my.tool:name", "restore map present");
+  });
+
+  it("dedupes colliding sanitized names", () => {
+    const body = hardBody();
+    body.tools = [
+      { name: "a.b", description: "x", input_schema: { type: "object", properties: {} } },
+      { name: "a:b", description: "y", input_schema: { type: "object", properties: {} } },
+    ];
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, "gpt-astra-6", body, true, null, null, null, [], null, null);
+    const names = out.tools.map((t) => t.name);
+    assert.equal(new Set(names).size, names.length, "no collision");
+  });
 });

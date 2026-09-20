@@ -5,7 +5,7 @@ import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
-import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
+import { normalizeResponsesInput, sanitizeResponsesToolName } from "../translator/formats/responsesApi.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
@@ -56,14 +56,18 @@ function convertSystemToDeveloperRole(body) {
   }
 }
 
-// Strip server-generated item IDs (rs_/fc_/resp_/msg_) from input — avoids 404 with store=false
+// Strip server-generated item IDs (rs_/fc_/resp_/msg_) from input — avoids 404 with store=false.
+// Also strip function_call ids not matching 'fc' prefix (Codex 400 rejection).
 function stripStoredItemReferences(body) {
   if (!Array.isArray(body.input)) return;
   body.input = body.input.filter((item) => {
     if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return false;
     if (item && typeof item === "object" && !Array.isArray(item)) {
       if (item.type === "item_reference") return false;
-      if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) delete item.id;
+      if (typeof item.id === "string") {
+        if (SERVER_ID_PATTERN.test(item.id)) delete item.id;
+        else if (item.type === "function_call" && !item.id.startsWith("fc")) delete item.id;
+      }
     }
     return true;
   });
@@ -108,11 +112,12 @@ function normalizeCodexTools(body) {
       : (fn && typeof fn.strict === "boolean" ? fn.strict : undefined);
     for (const k of Object.keys(tool)) delete tool[k];
     tool.type = "function";
-    tool.name = name.slice(0, 128);
+    const sanitizedName = sanitizeResponsesToolName(name, validNames);
+    tool.name = sanitizedName;
     if (description) tool.description = description;
     tool.parameters = stripCodexUnsupportedPatterns(parameters, patternStats);
     if (typeof strict === "boolean") tool.strict = strict;
-    validNames.add(name);
+    validNames.add(sanitizedName);
     return true;
   });
   if (patternStats.removed > 0) {
@@ -123,6 +128,16 @@ function normalizeCodexTools(body) {
     if (body.tool_choice.type === "function") {
       const n = typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "";
       if (!n || !validNames.has(n)) delete body.tool_choice;
+    }
+  }
+  // Sanitize function_call / custom_tool_call names in input history
+  if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (item && typeof item === "object" && (item.type === "function_call" || item.type === "custom_tool_call")) {
+        if (typeof item.name === "string" && item.name) {
+          item.name = sanitizeResponsesToolName(item.name);
+        }
+      }
     }
   }
 }

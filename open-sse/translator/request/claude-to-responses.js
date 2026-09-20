@@ -16,6 +16,7 @@ import {
   clampResponsesCallId,
   coerceResponsesArguments,
   coerceResponsesOutput,
+  sanitizeResponsesToolName,
 } from "../formats/responsesApi.js";
 import { encodeDataUri } from "../concerns/image.js";
 import { ROLE, CLAUDE_BLOCK, RESPONSES_ITEM, OPENAI_BLOCK } from "../schema/index.js";
@@ -33,13 +34,15 @@ function extractInstructionsText(system) {
 
 // Mirror convertToolChoice in claude-to-openai.js, Responses-native output:
 // Claude {type:"any"} → "required"; {type:"tool",name} → {type:"function",name}.
-function convertToolChoice(choice) {
+function convertToolChoice(choice, toolNameMap) {
   if (!choice) return undefined;
   if (typeof choice === "string") return choice;
   if (choice.type === "auto") return "auto";
   if (choice.type === "any") return "required";
   if (choice.type === "tool" && choice.name) {
-    return { type: OPENAI_BLOCK.FUNCTION, name: choice.name };
+    const raw = choice.name;
+    const mapped = toolNameMap?.get(raw) || sanitizeResponsesToolName(raw);
+    return { type: OPENAI_BLOCK.FUNCTION, name: mapped };
   }
   return "auto";
 }
@@ -54,6 +57,19 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
   try {
     const src = body && typeof body === "object" ? body : {};
     const result = { model, input: [], store: false };
+    const usedToolNames = new Set();
+    const rawToSanitized = new Map();
+    const sanitizedToRaw = new Map();
+
+    const getSanitizedName = (raw) => {
+      const trimmed = typeof raw === "string" ? raw.trim() : "";
+      if (!trimmed) return "_unknown";
+      if (rawToSanitized.has(trimmed)) return rawToSanitized.get(trimmed);
+      const sanitized = sanitizeResponsesToolName(trimmed, usedToolNames);
+      rawToSanitized.set(trimmed, sanitized);
+      if (sanitized !== trimmed) sanitizedToRaw.set(sanitized, trimmed);
+      return sanitized;
+    };
 
     const instructions = extractInstructionsText(src.system);
     result.instructions = instructions;
@@ -90,11 +106,11 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
           });
         } else if (block.type === CLAUDE_BLOCK.TOOL_USE) {
           flushText(ROLE.ASSISTANT);
+          const name = getSanitizedName(block.name);
           result.input.push({
             type: RESPONSES_ITEM.FUNCTION_CALL,
-            id: block.id,
             call_id: clampResponsesCallId(block.id),
-            name: block.name,
+            name,
             arguments: coerceResponsesArguments(block.input),
           });
         } else if (block.type === CLAUDE_BLOCK.TOOL_RESULT) {
@@ -126,8 +142,9 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
     if (Array.isArray(src.tools) && src.tools.length > 0) {
       const tools = [];
       for (const tool of src.tools) {
-        const name = typeof tool?.name === "string" ? tool.name.trim() : "";
-        if (!name) continue;
+        const rawName = typeof tool?.name === "string" ? tool.name.trim() : "";
+        if (!rawName) continue;
+        const name = getSanitizedName(rawName);
         tools.push({
           type: OPENAI_BLOCK.FUNCTION,
           name,
@@ -138,8 +155,20 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
       if (tools.length > 0) result.tools = tools;
     }
 
-    const toolChoice = convertToolChoice(src.tool_choice);
-    if (toolChoice !== undefined) result.tool_choice = toolChoice;
+    if (src.tool_choice) {
+      const choice = src.tool_choice;
+      if (typeof choice === "string") {
+        result.tool_choice = choice;
+      } else if (choice.type === "auto") {
+        result.tool_choice = "auto";
+      } else if (choice.type === "any") {
+        result.tool_choice = "required";
+      } else if (choice.type === "tool" && choice.name) {
+        result.tool_choice = { type: OPENAI_BLOCK.FUNCTION, name: getSanitizedName(choice.name) };
+      }
+    }
+
+    if (sanitizedToRaw.size > 0) result._toolNameMap = sanitizedToRaw;
 
     if (src.max_tokens !== undefined) result.max_output_tokens = src.max_tokens;
     if (src.temperature !== undefined) result.temperature = src.temperature;

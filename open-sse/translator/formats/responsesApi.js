@@ -24,7 +24,20 @@ export function normalizeResponsesInput(input) {
 }
 
 // Strict Responses upstreams reject overlong call_ids with InputValidationError (#393).
+// Codex requires function_call ids to begin with 'fc' (400 otherwise).
 export const MAX_RESPONSES_CALL_ID_LEN = 64;
+
+// Codex tool-name pattern ^[a-zA-Z0-9_-]+$ — strip, cap, dedupe.
+export function sanitizeResponsesToolName(name, used) {
+  let s = String(name || "").trim().replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64).replace(/^_+/, "");
+  if (!s) s = "_unknown";
+  if (/^[0-9]/.test(s)) s = `_${s}`;
+  if (!used) return s;
+  let out = s, i = 2;
+  while (used.has(out)) out = `${s}_${i++}`;
+  used.add(out);
+  return out;
+}
 
 // Fallback ids share one Date.now() when a batch of items is sanitized in a tight
 // loop — a per-process sequence keeps same-millisecond ids unique so

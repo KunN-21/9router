@@ -203,4 +203,24 @@ describe("openaiToClaudeResponse", () => {
       limit: 120
     });
   });
+
+  it("maps path alias to file_path and notebook path alias to notebook_path", () => {
+    const mkChunk = (name, args) => ({
+      id: "chatcmpl-test",
+      model: "gpt-test",
+      choices: [{
+        delta: {
+          tool_calls: [{ index: 0, id: "call_x", function: { name, arguments: JSON.stringify(args) } }]
+        },
+        finish_reason: "tool_calls"
+      }]
+    });
+    const jsonOf = (result) => {
+      const d = result.find((event) => event.delta?.type === "input_json_delta");
+      return JSON.parse(d.delta.partial_json);
+    };
+    expect(jsonOf(openaiToClaudeResponse(mkChunk("Read", { path: "/tmp/a.txt" }), { toolCalls: new Map() })).file_path).toBe("/tmp/a.txt");
+    expect(jsonOf(openaiToClaudeResponse(mkChunk("Edit", { path: "/tmp/b.txt", old_string: "x", new_string: "y" }), { toolCalls: new Map() })).file_path).toBe("/tmp/b.txt");
+    expect(jsonOf(openaiToClaudeResponse(mkChunk("NotebookEdit", { path: "/tmp/n.ipynb", new_source: "x" }), { toolCalls: new Map() })).notebook_path).toBe("/tmp/n.ipynb");
+  });
 });
