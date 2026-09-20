@@ -3,6 +3,7 @@ import { DefaultExecutor } from "./default.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { modelTargetFormat } from "../providers/models/schema.js";
 import { getProviderModels } from "../config/providerModels.js";
+import { resolveFamily } from "../providers/familyProfiles.js";
 import {
   normalizeResponsesInput,
   clampResponsesCallId,
@@ -49,6 +50,8 @@ function baseModelId(model) {
 // Responses-only per the provider registry (grok-4.6, gpt-5.6-luna, muse-spark, …).
 // Reading the registry keeps this in sync with config — never hardcode model ids here.
 function isResponsesModel(model) {
+  const family = resolveFamily(model);
+  if (family?.endpoint?.includes("responses")) return true;
   const entry = getProviderModels("opencode-go").find((m) => m.id === baseModelId(model));
   return modelTargetFormat(entry) === "openai-responses";
 }

@@ -1,6 +1,6 @@
 import { describe, it } from "vitest";
 import assert from "node:assert";
-import { resolveFamily, FAMILY_PROFILES } from "../../open-sse/providers/familyProfiles.js";
+import { resolveFamily, FAMILY_PROFILES, getPromptInjection, PROMPT_INJECTIONS } from "../../open-sse/providers/familyProfiles.js";
 import { normalizeEdit, hashAnchor } from "../../open-sse/translator/formats/hashline.js";
 
 describe("family profile registry", () => {
@@ -11,6 +11,13 @@ describe("family profile registry", () => {
     assert.equal(resolveFamily("muse-spark-1.3-contributor-free")?.family, "muse-spark");
     assert.match(resolveFamily("gpt-astra-6")?.family, /gpt/);
     assert.equal(resolveFamily("unknown-xyz-1.0"), null);
+  });
+
+  it("getPromptInjection returns configured prompt", () => {
+    assert.ok(getPromptInjection("gemini-tool-strict"));
+    assert.match(getPromptInjection("gemini-tool-strict"), /Tool Calling Constraints/);
+    assert.equal(getPromptInjection(null), null);
+    assert.equal(getPromptInjection("unknown-key"), null);
   });
 
   it("FAMILY_PROFILES is version-agnostic regex array", () => {
@@ -86,5 +93,21 @@ describe("translator family direct branch", () => {
     const body = { messages: [{ role: "user", content: "hi" }] };
     const out = translateRequest(FORMATS.CLAUDE, FORMATS.VERTEX, "unknown-xyz-1.0", body, true, null, null, null, [], null, null);
     assert.equal(out._directHit, undefined);
+  });
+});
+
+describe("executors read profile endpoint", () => {
+  it("OpenCodeExecutor buildUrl uses profile endpoint", async () => {
+    const { OpenCodeExecutor } = await import("../../open-sse/executors/opencode.js");
+    const ex = new OpenCodeExecutor();
+    assert.equal(ex.buildUrl("muse-spark-1.3-contributor-free"), "https://opencode.ai/zen/v1/responses");
+    assert.equal(ex.buildUrl("gpt-astra-6"), "https://opencode.ai/zen/v1/responses");
+  });
+
+  it("OpenCodeGoExecutor buildUrl uses profile endpoint", async () => {
+    const { OpenCodeGoExecutor } = await import("../../open-sse/executors/opencode-go.js");
+    const ex = new OpenCodeGoExecutor();
+    assert.equal(ex.buildUrl("muse-spark-1.3-contributor-free"), "https://opencode.ai/zen/go/v1/responses");
+    assert.equal(ex.buildUrl("gpt-astra-6"), "https://opencode.ai/zen/go/v1/responses");
   });
 });

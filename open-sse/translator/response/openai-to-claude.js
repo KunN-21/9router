@@ -3,79 +3,15 @@ import { FORMATS } from "../formats.js";
 import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK } from "../schema/index.js";
 import { fromOpenAIFinish } from "../concerns/finishReason.js";
 import { extractReasoningText } from "../concerns/reasoning.js";
-import { repairDuplicatedJsonArguments, appendToolArgs } from "../concerns/toolArgs.js";
-
-// Legacy "proxy_" prefix used by older request translators. Response strips it
-// defensively so tool names from such turns resolve back (e.g. proxy_Read → Read
-// for arg sanitization). Current request translator emits no prefix ("") — strip
-// is then a no-op. Kept intentionally; do NOT couple to request's empty prefix.
-const CLAUDE_OAUTH_TOOL_PREFIX = "proxy_";
-
-// Sanitize tool call arguments to fix bad params from non-Anthropic models.
-// Fast path: single parse for the common valid case; repair only on failure.
-function sanitizeToolArgs(toolName, argsJson) {
-  let args;
-  try {
-    args = JSON.parse(argsJson);
-  } catch {
-    const repairedJson = repairDuplicatedJsonArguments(argsJson);
-    try {
-      args = JSON.parse(repairedJson);
-    } catch {
-      return repairedJson;
-    }
-  }
-  const name = toolName.startsWith(CLAUDE_OAUTH_TOOL_PREFIX)
-    ? toolName.slice(CLAUDE_OAUTH_TOOL_PREFIX.length)
-    : toolName;
-  if (name === "Read" || name === "Edit" || name === "Write") sanitizeFileArgs(args);
-  if (name === "NotebookEdit") sanitizeNotebookArgs(args);
-  if (name === "Read") sanitizeReadArgs(args);
-  return JSON.stringify(args);
-}
-
-// Map common non-Claude model aliases (path, file, filepath, filename) to file_path
-function sanitizeFileArgs(args) {
-  if (!args || typeof args !== "object") return;
-  if (!args.file_path) {
-    const alias = args.path || args.filepath || args.file || args.filename || args.target;
-    if (typeof alias === "string" && alias.trim()) {
-      args.file_path = alias.trim();
-    }
-  }
-}
-
-function sanitizeNotebookArgs(args) {
-  if (!args || typeof args !== "object") return;
-  if (!args.notebook_path) {
-    const alias = args.path || args.filepath || args.file || args.file_path || args.filename;
-    if (typeof alias === "string" && alias.trim()) {
-      args.notebook_path = alias.trim();
-    }
-  }
-}
-
-function sanitizeReadArgs(args) {
-  if (typeof args.limit === "string" && /^\d+$/.test(args.limit)) args.limit = Number(args.limit);
-  if (typeof args.offset === "string" && /^-?\d+$/.test(args.offset)) args.offset = Number(args.offset);
-
-  if (typeof args.limit === "number") {
-    if (args.limit > 2000) args.limit = 2000;
-    if (args.limit < 1) delete args.limit;
-  }
-  if (typeof args.offset === "number" && args.offset < 0) args.offset = 0;
-
-  if ("pages" in args && !isValidPdfPagesArg(args.file_path, args.pages)) {
-    delete args.pages;
-  }
-}
-
-function isValidPdfPagesArg(filePath, pages) {
-  return typeof filePath === "string" &&
-    filePath.toLowerCase().endsWith(".pdf") &&
-    typeof pages === "string" &&
-    /^\d+(?:-\d+)?$/.test(pages);
-}
+import {
+  repairDuplicatedJsonArguments,
+  appendToolArgs,
+  sanitizeToolArgs,
+  sanitizeFileArgs,
+  sanitizeNotebookArgs,
+  sanitizeReadArgs,
+  CLAUDE_OAUTH_TOOL_PREFIX,
+} from "../concerns/toolArgs.js";
 
 // Helper: stop thinking block if started
 function stopThinkingBlock(state, results) {

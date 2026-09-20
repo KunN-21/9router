@@ -31,4 +31,11 @@ describe("claude-to-gemini direct", () => {
     const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, "gemini-3.8-flash", hardBody(), true, null, null, null, [], null, null);
     assert.ok(!out.contents, "family handler must not run for KIRO target");
   });
+
+  it("injects gemini-tool-strict prompt into system instruction", () => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.GEMINI, "gemini-3.8-flash", { system: "base prompt" }, true, null, null, null, [], null, null);
+    assert.match(out.systemInstruction.parts[0].text, /base prompt/);
+    assert.match(out.systemInstruction.parts[0].text, /Tool Calling Constraints/);
+    assert.match(out.systemInstruction.parts[0].text, /file_path/);
+  });
 });

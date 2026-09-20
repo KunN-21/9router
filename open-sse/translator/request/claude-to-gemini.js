@@ -15,6 +15,7 @@ import {
   normalizeGeminiContents,
 } from "../formats/gemini.js";
 import { ROLE, CLAUDE_BLOCK, GEMINI_ROLE, DEFAULT_IMAGE_MIME } from "../schema/index.js";
+import { resolveFamily, getPromptInjection } from "../../providers/familyProfiles.js";
 
 // Local copy (same as open-sse/translator/request/openai-to-gemini.js):
 // Gemini requires ^[a-zA-Z_][a-zA-Z0-9_.:\-]{0,63}$.
@@ -67,7 +68,12 @@ export function claudeToGeminiRequest(model, body, stream, credentials) {
       safetySettings: DEFAULT_SAFETY_SETTINGS,
     };
 
-    const systemText = extractSystemText(src.system);
+    const family = resolveFamily(model);
+    const injection = getPromptInjection(family?.promptInject);
+    let systemText = extractSystemText(src.system);
+    if (injection) {
+      systemText = systemText ? `${systemText}\n\n${injection}` : injection;
+    }
     if (systemText) {
       result.systemInstruction = { role: GEMINI_ROLE.USER, parts: [{ text: systemText }] };
     }

@@ -7,6 +7,7 @@ import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { applyOcEgress } from "../utils/ocEgress.js";
 import { isMuseSparkModel } from "../providers/models/helpers.js";
+import { resolveFamily } from "../providers/familyProfiles.js";
 import { ANTHROPIC_API_VERSION } from "../providers/shared.js";
 import {
   normalizeResponsesInput,
@@ -280,6 +281,8 @@ function baseModelId(model) {
 }
 
 function isResponsesModel(model) {
+  const family = resolveFamily(model);
+  if (family?.endpoint?.includes("responses")) return true;
   const base = baseModelId(model);
   return RESPONSES_MODELS.has(base) || isMuseSparkModel(base);
 }

@@ -20,6 +20,7 @@ import {
 } from "../formats/responsesApi.js";
 import { encodeDataUri } from "../concerns/image.js";
 import { ROLE, CLAUDE_BLOCK, RESPONSES_ITEM, OPENAI_BLOCK } from "../schema/index.js";
+import { resolveFamily, getPromptInjection } from "../../providers/familyProfiles.js";
 
 function extractInstructionsText(system) {
   if (typeof system === "string") return system;
@@ -71,7 +72,12 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
       return sanitized;
     };
 
-    const instructions = extractInstructionsText(src.system);
+    const family = resolveFamily(model);
+    const injection = getPromptInjection(family?.promptInject);
+    let instructions = extractInstructionsText(src.system);
+    if (injection) {
+      instructions = instructions ? `${instructions}\n\n${injection}` : injection;
+    }
     result.instructions = instructions;
 
     for (const msg of Array.isArray(src.messages) ? src.messages : []) {
