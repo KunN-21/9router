@@ -43,6 +43,14 @@ export const SMART_TRUNCATE_MIN_LINES = 250;   // only kick in above this
 // readNumbered (files with "  N|content" lines, e.g. Cursor read_file)
 export const READ_NUMBERED_MIN_HIT_RATIO = 0.7;
 
+// Test-runner filters (port of Rust rtk pipe_cmd / *_cmd filters)
+export const PYTEST_MAX_FAILURE_LINES = 100; // pytest failure body line cap
+export const GO_TEST_MAX_OUTPUT_LINES = 120; // go test -json kept output events
+export const VITEST_MAX_FAILURES = 10;       // vitest failing suites shown
+export const TSC_PER_FILE_MAX = 10;          // tsc/mypy errors shown per file
+export const RUFF_MAX_DIAGNOSTICS = 50;      // ruff JSON diagnostics cap
+export const CARGO_TEST_MAX_LINES = 200;     // cargo test kept lines cap
+
 // Filter name strings (Rust parity + JS extras)
 export const FILTERS = {
   GIT_DIFF: "git-diff",
@@ -56,5 +64,15 @@ export const FILTERS = {
   SMART_TRUNCATE: "smart-truncate",
   READ_NUMBERED: "read-numbered",
   SEARCH_LIST: "search-list",
-  BUILD_OUTPUT: "build-output"
+  BUILD_OUTPUT: "build-output",
+  PYTEST: "pytest",
+  GO_TEST: "go-test",
+  VITEST: "vitest",
+  TSC: "tsc",
+  MYPY: "mypy",
+  PRETTIER: "prettier",
+  RUFF: "ruff",
+  RUFF_CHECK: "ruff-check",
+  RUFF_FORMAT: "ruff-format",
+  CARGO_TEST: "cargo-test"
 };

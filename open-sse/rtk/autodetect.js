@@ -1,6 +1,6 @@
 // Port of auto_detect_filter (rtk/src/cmds/system/pipe_cmd.rs:132-188) + JS extras
-// Detection order: git-log → git-diff → git-status → build-output → grep → find → tree → ls → search-list
-//                  → read-numbered → dedup-log → smart-truncate → null
+// Detection order: git-log → git-diff → git-status → test runners / linters → build-output
+//                  → grep → find → tree → ls → search-list → read-numbered → dedup-log → smart-truncate → null
 import { DETECT_WINDOW, READ_NUMBERED_MIN_HIT_RATIO, SMART_TRUNCATE_MIN_LINES } from "./constants.js";
 import { gitDiff } from "./filters/gitDiff.js";
 import { gitStatus } from "./filters/gitStatus.js";
@@ -14,6 +14,14 @@ import { tree } from "./filters/tree.js";
 import { smartTruncate } from "./filters/smartTruncate.js";
 import { readNumbered, READ_NUMBERED_LINE_RE } from "./filters/readNumbered.js";
 import { searchList, SEARCH_LIST_HEADER_RE } from "./filters/searchList.js";
+import { pytest } from "./filters/pytest.js";
+import { goTest } from "./filters/goTest.js";
+import { vitest } from "./filters/vitest.js";
+import { tsc } from "./filters/tsc.js";
+import { mypy } from "./filters/mypy.js";
+import { prettier } from "./filters/prettier.js";
+import { ruff } from "./filters/ruff.js";
+import { cargoTest } from "./filters/cargoTest.js";
 
 const RE_GIT_DIFF = /^diff --git /m;
 const RE_GIT_DIFF_HUNK = /^@@ /m;
@@ -25,6 +33,16 @@ const RE_TREE_GLYPH = /[├└]──|│  /;
 const RE_LS_ROW = /^[-dlbcps][rwx-]{9}/m;
 const RE_LS_TOTAL = /^total \d+$/m;
 
+// Test-runner & linter probes (Rust pipe_cmd / *_cmd parity)
+const RE_CARGO_RESULT = /^test result:/m;
+const RE_PYTEST_SESSION = /={2,} test session starts ={2,}/;
+const RE_GO_JSON = /^\s*\{"Action":/m;
+const RE_VITEST_JSON = /"(testResults|numTotalTests)"\s*:/;
+const RE_MYPY = /\.py:\d+.*:\s*(?:error|warning|note):|^mypy:\s*error:|\.py:.*:\s*error:/m;
+const RE_TSC = /\(\d+,\d+\):\s*(?:error|warning)\s*TS\d+|:\d+:\d+\s+-\s+(?:error|warning)\s+TS\d+|^(?:error|warning)\s+TS\d+:/m;
+const RE_PRETTIER = /Checking formatting\.\.\.|\bAll matched files use Prettier code style\b/m;
+const RE_RUFF_FORMAT = /would reformat:|\b\d+ files? left unchanged\b/im;
+
 export function autoDetectFilter(text) {
   // Rust: floor_char_boundary to avoid UTF-8 split — JS .slice() by char is safe
   const head = text.length > DETECT_WINDOW ? text.slice(0, DETECT_WINDOW) : text;
@@ -32,6 +50,18 @@ export function autoDetectFilter(text) {
   if (RE_GIT_LOG.test(head)) return gitLog;
   if (RE_GIT_DIFF.test(head) || RE_GIT_DIFF_HUNK.test(head)) return gitDiff;
   if (RE_GIT_STATUS.test(head)) return gitStatus;
+
+  // Test runners & linters BEFORE generic build output: their shape is more specific
+  // (Rust pipe_cmd resolves explicit filter names before fallback).
+  if (RE_CARGO_RESULT.test(head)) return cargoTest;
+  if (RE_PYTEST_SESSION.test(head)) return pytest;
+  if (RE_GO_JSON.test(head)) return goTest;
+  if (RE_VITEST_JSON.test(head)) return vitest;
+  if (RE_MYPY.test(head) || (head.includes(".py:") && head.includes(": error:"))) return mypy;
+  if (RE_TSC.test(head)) return tsc;
+  if (RE_PRETTIER.test(head)) return prettier;
+  if (/^\s*\[/.test(head.trim()) && /"filename"\s*:\s*".*"\s*,?\s*"code"|"location"\s*:\s*\{\s*"row"/.test(head)) return ruff;
+  if (RE_RUFF_FORMAT.test(head)) return ruff;
 
   // Build output BEFORE porcelain check: prevents cargo "Compiling" misdetection as git-status
   if (RE_BUILD_OUTPUT.test(head)) return buildOutput;

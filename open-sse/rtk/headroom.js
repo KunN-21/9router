@@ -26,6 +26,8 @@ function messagePayload(body) {
   if (Array.isArray(body?.input)) return body.input;
   const kiro = collectKiroHeadroomMessages(body);
   if (kiro) return kiro.messages;
+  const gemini = collectGeminiHeadroomMessages(body);
+  if (gemini) return gemini.messages;
   return null;
 }
 
@@ -322,6 +324,17 @@ function hasErrorToolBlock(body, format) {
         if (item?.type === "function_call_output" && (item.status === "error" || item.is_error === true)) return true;
       }
     }
+    // Gemini-family: functionResponse.response carries isError/status.
+    if ((format === "gemini" || format === "gemini-cli" || format === "vertex" || format === "antigravity")
+      && (Array.isArray(body?.contents) || Array.isArray(body?.request?.contents))) {
+      const contents = Array.isArray(body.contents) ? body.contents : body.request.contents;
+      for (const content of contents) {
+        for (const part of (Array.isArray(content?.parts) ? content.parts : [])) {
+          const resp = part?.functionResponse?.response;
+          if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error")) return true;
+        }
+      }
+    }
   } catch { /* fail-open */ }
   return false;
 }
@@ -394,6 +407,105 @@ function collectKiroHeadroomMessages(body) {
   if (state.currentMessage) visit(state.currentMessage);
 
   return messages.length > 0 ? { messages, targets } : null;
+}
+
+// Gemini-family shape: contents[].parts[] with text / functionCall /
+// functionResponse (+ optional systemInstruction). Project to OpenAI messages
+// for the proxy, then copy compressed text back into the original parts.
+// Mirrors the Kiro projection above and headroom upstream's
+// _gemini_contents_to_messages: text parts compress, non-text parts
+// (thoughtSignature, inlineData, functionCall args) are preserved verbatim.
+// Antigravity wraps contents under body.request — projection targets the live
+// array so both body.contents and body.request.contents are covered.
+function collectGeminiHeadroomMessages(body) {
+  const contents = Array.isArray(body?.contents)
+    ? body.contents
+    : Array.isArray(body?.request?.contents)
+      ? body.request.contents
+      : null;
+  if (!contents) return null;
+
+  const messages = [];
+  const targets = [];
+
+  const addTextTarget = (role, text, target, extra = {}) => {
+    if (typeof text !== "string") return;
+    messages.push({ role, content: text, ...extra });
+    targets.push(target);
+  };
+
+  const sys = body?.systemInstruction || body?.request?.systemInstruction;
+  if (sys && Array.isArray(sys.parts)) {
+    for (const part of sys.parts) {
+      if (typeof part?.text === "string") {
+        addTextTarget("system", part.text, { object: part, key: "text" });
+      }
+    }
+  }
+
+  for (const content of contents) {
+    const parts = Array.isArray(content?.parts) ? content.parts : null;
+    if (!parts) continue;
+    const role = content.role === "model" ? "assistant" : "user";
+
+    for (const part of parts) {
+      if (!part || typeof part !== "object") continue;
+      // Skip thought-only parts and non-text payloads (routing identity).
+      if (part.thought === true && !part.text) continue;
+      if (part.inlineData || part.fileData || part.functionCall) continue;
+
+      if (typeof part.text === "string" && part.text) {
+        addTextTarget(role, part.text, { object: part, key: "text" });
+        continue;
+      }
+
+      const fr = part.functionResponse;
+      if (fr && typeof fr === "object") {
+        const resp = fr.response;
+        if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error")) continue;
+        const result = resp?.result;
+        if (typeof result === "string") {
+          addTextTarget(
+            "tool",
+            result,
+            { object: resp, key: "result" },
+            fr.id ? { tool_call_id: fr.id } : fr.name ? { tool_call_id: `call_${fr.name}` } : {}
+          );
+        }
+      }
+    }
+  }
+
+  return messages.length > 0 ? { messages, targets } : null;
+}
+
+function applyGeminiHeadroomMessages(projection, compressedMessages, diagnostics) {
+  if (!Array.isArray(compressedMessages) || compressedMessages.length !== projection.messages.length) {
+    setDiagnostic(diagnostics, "proxy response did not match Gemini message count");
+    return false;
+  }
+
+  const updates = [];
+  for (let i = 0; i < projection.messages.length; i++) {
+    const expected = projection.messages[i];
+    const actual = compressedMessages[i];
+    if (!actual || actual.role !== expected.role) {
+      setDiagnostic(diagnostics, "proxy response did not preserve Gemini message order");
+      return false;
+    }
+
+    const text = textFromHeadroomMessage(actual);
+    if (text === null) {
+      setDiagnostic(diagnostics, "proxy response missing Gemini text content");
+      return false;
+    }
+    updates.push({ target: projection.targets[i], text });
+  }
+
+  for (const update of updates) {
+    update.target.object[update.target.key] = update.text;
+  }
+  return true;
 }
 
 function textFromHeadroomMessage(message) {
@@ -614,6 +726,32 @@ export async function compressWithHeadroom(body, { enabled, url, model, format, 
         return null;
       }
       if (!applyKiroHeadroomMessages(projection, data.messages, diagnostics)) return null;
+      if (diagnostics) diagnostics.after = captureSizeSnapshot(body);
+      return data;
+    }
+
+    // Gemini-family shape (gemini / gemini-cli / vertex / antigravity):
+    // contents[].parts[] (Antigravity wraps under body.request) are projected to
+    // OpenAI messages for the proxy, then copied back into the original parts.
+    // thoughtSignature / functionCall args / inlineData are preserved verbatim;
+    // only text and functionResponse.result.text are compressible targets.
+    if (format === "gemini" || format === "gemini-cli" || format === "vertex" || format === "antigravity") {
+      const projection = collectGeminiHeadroomMessages(body);
+      if (!projection) {
+        setDiagnostic(diagnostics, "Gemini request did not project to messages[]");
+        return null;
+      }
+      const data = await callCompress(url, projection.messages, model, timeoutMs, compressUserMessages, diagnostics || {});
+      if (!data) return null;
+      // Byte-shrink guard BEFORE mutating any Gemini state: projected-message sizes
+      // proxy for body shrink (targets are unchanged by compression).
+      const beforeProjectedBytes = jsonBytes(projection.messages);
+      const afterProjectedBytes = jsonBytes(data.messages);
+      if (afterProjectedBytes >= beforeProjectedBytes * 0.95) {
+        setDiagnostic(diagnostics, "phantom savings — keeping original (>95% size)");
+        return null;
+      }
+      if (!applyGeminiHeadroomMessages(projection, data.messages, diagnostics)) return null;
       if (diagnostics) diagnostics.after = captureSizeSnapshot(body);
       return data;
     }

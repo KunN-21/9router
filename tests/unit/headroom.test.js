@@ -817,14 +817,19 @@ describe("compressWithHeadroom", () => {
     expect(body.messages[0].content).toBe("long");
   });
 
-  it("skips unknown shapes", async () => {
-    global.fetch = vi.fn();
-    const body = { contents: [{ parts: [{ text: "long" }] }] };
+  it("handles Gemini contents via projection", async () => {
+    global.fetch = vi.fn(async () => new Response(JSON.stringify({
+      messages: [{ role: "user", content: "short" }],
+      tokens_before: 100, tokens_after: 20, tokens_saved: 80,
+    }), { status: 200 }));
+    const body = { contents: [{ role: "user", parts: [{ text: `long payload ${"with padding ".repeat(60)}` }] }] };
 
-    const stats = await compressWithHeadroom(body, { enabled: true, url: "http://localhost:8787" });
+    const stats = await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", model: "gemini-3.8-flash", format: "gemini",
+    });
 
-    expect(stats).toBeNull();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(stats.tokens_saved).toBe(80);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   describe("timeout normalization", () => {

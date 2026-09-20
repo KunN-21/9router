@@ -14,6 +14,12 @@ export function compressMessages(body, enabled) {
     return compressKiroFormat(body, enabled);
   }
 
+  // Gemini-family format: contents[].parts[].functionResponse (Antigravity wraps
+  // in body.request). Only result text may shrink; signatures/binaries preserved.
+  if (Array.isArray(body.contents) || Array.isArray(body.request?.contents)) {
+    return compressGeminiFormat(body, enabled);
+  }
+
   // Support both OpenAI/Claude "messages" and OpenAI Responses "input"
   const items = Array.isArray(body.messages) ? body.messages
     : Array.isArray(body.input) ? body.input
@@ -112,6 +118,47 @@ function compressKiroFormat(body, enabled) {
     }
   } catch (e) {
     console.warn("[RTK] compressKiroFormat error:", e.message);
+    return null;
+  }
+  return stats;
+}
+
+// Compress Gemini-family format: contents[].parts[].functionResponse.response.result.
+// Pattern mirrors compressKiroFormat. Only result text may shrink — signatures,
+// functionCall args, thought, and non-text parts (inlineData/fileData) are routing
+// identity and must round-trip untouched. Antigravity wraps contents under
+// body.request; mutate in place on the live array so both paths are covered.
+function compressGeminiFormat(body, enabled) {
+  const stats = { bytesBefore: 0, bytesAfter: 0, hits: [] };
+  try {
+    const contents = Array.isArray(body.contents)
+      ? body.contents
+      : Array.isArray(body.request?.contents)
+        ? body.request.contents
+        : null;
+    if (!contents) return stats;
+
+    for (const content of contents) {
+      const parts = Array.isArray(content?.parts) ? content.parts : null;
+      if (!parts) continue;
+
+      for (const part of parts) {
+        const fr = part?.functionResponse;
+        if (!fr || typeof fr !== "object") continue;
+        // Skip explicit error results — preserve error traces.
+        const resp = fr.response;
+        if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error")) continue;
+
+        const result = resp?.result;
+        if (typeof result === "string") {
+          resp.result = compressText(result, stats, "gemini-function-response");
+        } else if (result && typeof result === "object" && typeof result.text === "string") {
+          result.text = compressText(result.text, stats, "gemini-function-response");
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[RTK] compressGeminiFormat error:", e.message);
     return null;
   }
   return stats;

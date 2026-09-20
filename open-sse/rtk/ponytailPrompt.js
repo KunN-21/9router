@@ -17,6 +17,14 @@ const SHARED_OUTPUT = "Code first. Then at most three short lines: what was skip
 
 const SHARED_NOT_LAZY = "Never simplify away: input validation at trust boundaries, error handling that prevents data loss, security, accessibility, anything explicitly requested. Non-trivial logic leaves ONE runnable check behind (an assert-based self-check or one small test file; no frameworks). Trivial one-liners need no test.";
 
+const SHARED_ROOT_CAUSE = "Bug fix means root cause, not symptom. One guard in the shared function beats a guard in every caller. Fix once where all callers route through.";
+
+const SHARED_UNDERSTAND_FIRST = "Ladder runs after understanding, not instead of it. Trace the real flow end to end first. Ladder shortens solution, never reading.";
+
+const SHARED_TWO_RUNGS = "Two rungs work: take the higher one and move on. First lazy solution that works is the right one.";
+
+const SHARED_SHIP_LAZY = "Complex request: ship the lazy version and question it in same response. Never stall on an answer you can default.";
+
 const SHARED_PERSISTENCE = "ACTIVE EVERY RESPONSE. No drift back to over-building. Still active if unsure.";
 
 export const PONYTAIL_PROMPTS = {
@@ -27,6 +35,10 @@ export const PONYTAIL_PROMPTS = {
     SHARED_RULES,
     SHARED_OUTPUT,
     SHARED_NOT_LAZY,
+    SHARED_ROOT_CAUSE,
+    SHARED_UNDERSTAND_FIRST,
+    SHARED_TWO_RUNGS,
+    SHARED_SHIP_LAZY,
     SHARED_PERSISTENCE,
   ].join(" "),
 
@@ -37,6 +49,10 @@ export const PONYTAIL_PROMPTS = {
     SHARED_RULES,
     SHARED_OUTPUT,
     SHARED_NOT_LAZY,
+    SHARED_ROOT_CAUSE,
+    SHARED_UNDERSTAND_FIRST,
+    SHARED_TWO_RUNGS,
+    SHARED_SHIP_LAZY,
     SHARED_PERSISTENCE,
   ].join(" "),
 
@@ -47,6 +63,10 @@ export const PONYTAIL_PROMPTS = {
     SHARED_RULES,
     SHARED_OUTPUT,
     SHARED_NOT_LAZY,
+    SHARED_ROOT_CAUSE,
+    SHARED_UNDERSTAND_FIRST,
+    SHARED_TWO_RUNGS,
+    SHARED_SHIP_LAZY,
     SHARED_PERSISTENCE,
   ].join(" "),
 };
