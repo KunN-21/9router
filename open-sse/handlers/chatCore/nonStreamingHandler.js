@@ -13,6 +13,7 @@ import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { ROLE, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP } from "../../translator/schema/index.js";
+import { storeGeminiThoughtSignature } from "../../services/thoughtSignatureStore.js";
 
 function parseToolArguments(value) {
   if (!value) return {};
@@ -275,16 +276,27 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
     const usage = response.usageMetadata || responseBody.usageMetadata;
     let textContent = "", reasoningContent = "";
     const toolCalls = [];
+    let pendingThoughtSignature = null;
 
     if (content?.parts) {
       for (const part of content.parts) {
+        const hasThoughtSig = part.thoughtSignature || part.thought_signature;
+        if (hasThoughtSig && typeof hasThoughtSig === "string") {
+          pendingThoughtSignature = hasThoughtSig;
+        }
         if (part.thought === true && part.text) reasoningContent += part.text;
         else if (part.text !== undefined) textContent += part.text;
         if (part.functionCall) {
+          const callId = part.functionCall.id || `call_${part.functionCall.name || "tool"}_${Date.now()}_${toolCalls.length}`;
+          const sigToStore = part.thoughtSignature || part.thought_signature || pendingThoughtSignature;
+          if (sigToStore) {
+            storeGeminiThoughtSignature(callId, sigToStore, response.sessionId || responseBody.sessionId || null, response.modelVersion || responseBody.model || "gemini");
+            pendingThoughtSignature = null;
+          }
           toolCalls.push({
-            id: `call_${part.functionCall.name}_${Date.now()}_${toolCalls.length}`,
+            id: callId,
             type: "function",
-            function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args || {}) }
+            function: { name: part.functionCall.name || "", arguments: JSON.stringify(part.functionCall.args || {}) }
           });
         }
         // Handle inline image data (from image generation models)
@@ -294,6 +306,85 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
           textContent += `\n![image](data:${mimeType};base64,${inlineData.data})\n`;
         }
       }
+    }
+
+    if (sourceFormat === FORMATS.CLAUDE) {
+      const claudeContent = [];
+      if (reasoningContent) {
+        claudeContent.push({ type: "thinking", thinking: reasoningContent });
+      }
+      if (textContent) {
+        claudeContent.push({ type: "text", text: textContent });
+      }
+      for (const tc of toolCalls) {
+        claudeContent.push({
+          type: "tool_use",
+          id: tc.id,
+          name: tc.function.name,
+          input: parseToolArguments(tc.function.arguments),
+        });
+      }
+      if (claudeContent.length === 0) claudeContent.push({ type: "text", text: "" });
+
+      const stopReason = toolCalls.length > 0 ? "tool_use" : (candidate.finishReason === "MAX_TOKENS" ? "max_tokens" : "end_turn");
+
+      return {
+        id: String(response.responseId || `msg_${Date.now()}`),
+        type: "message",
+        role: "assistant",
+        model: response.modelVersion || "gemini",
+        content: claudeContent,
+        stop_reason: stopReason,
+        stop_sequence: null,
+        usage: {
+          input_tokens: (usage?.promptTokenCount || 0) + (usage?.thoughtsTokenCount || 0),
+          output_tokens: usage?.candidatesTokenCount || 0,
+        },
+      };
+    }
+
+    if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
+      const output = [];
+      if (reasoningContent) {
+        output.push({
+          type: RESPONSES_ITEM.REASONING,
+          summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: reasoningContent }],
+        });
+      }
+      if (textContent) {
+        output.push({
+          type: RESPONSES_ITEM.MESSAGE,
+          role: ROLE.ASSISTANT,
+          content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, text: textContent, annotations: [] }],
+        });
+      }
+      for (const tc of toolCalls) {
+        const custom = customToolNames?.has(tc.function.name);
+        output.push({
+          type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
+          id: `${custom ? "ctc" : "fc"}_${tc.id}`,
+          call_id: tc.id,
+          name: tc.function.name,
+          ...(custom
+            ? { input: extractCustomToolInput(tc.function.arguments) }
+            : { arguments: tc.function.arguments }),
+        });
+      }
+      return {
+        id: `resp_${response.responseId || Date.now()}`,
+        object: "response",
+        created_at: Math.floor(new Date(response.createTime || Date.now()).getTime() / 1000),
+        model: response.modelVersion || "gemini",
+        status: "completed",
+        background: false,
+        error: null,
+        output,
+        usage: {
+          input_tokens: (usage?.promptTokenCount || 0) + (usage?.thoughtsTokenCount || 0),
+          output_tokens: usage?.candidatesTokenCount || 0,
+          total_tokens: usage?.totalTokenCount || 0,
+        },
+      };
     }
 
     const message = { role: "assistant" };

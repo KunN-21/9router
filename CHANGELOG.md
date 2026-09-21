@@ -1,3 +1,17 @@
+# v0.5.81-local.9
+
+- Dashboard: show only native Antigravity summary windows (`Gemini (5h)`, `Gemini Weekly`, `Claude & GPT (5h)`, `Claude & GPT Weekly`); drop per-model mirror rows (`Gemini (Flash / Pro)`, `Claude (Sonnet / Opus)`, `GPT-OSS 120B`).
+
+# v0.5.81-local.8
+
+- Dashboard: show Antigravity `Gemini (5h)` / `Claude & GPT (5h)` Five Hour Limit Remaining alongside weekly rows.
+
+# v0.5.81-local.7
+
+- Antigravity: preserve tool call IDs/signatures and envelope; map `tool_choice` matrix (auto/none/forced/required); preserve `isError: true`; support stream & non-stream formats with cached `thoughtSignature`.
+- RTK / Token Saver: measure native UTF-8 bytes (`Buffer.byteLength`); protect code editing tools (`Read`, `Grep`, `Edit`, `Write`, `patch`, `anchor`); fail-open unknown tools; skip Headroom on protected/unknown tool results.
+- OpenCode: maintain lowercase tool quartet (`bash`, `glob`, `grep`, `read`) fingerprinting and response name restoration (PR #4142).
+
 # v0.5.81-local.4
 
 - Fix Muse/Responses tool call arguments loss: resolve `response.function_call_arguments.delta` across `call_id`, `item_id`, and `fc_` prefixes so parallel tool calls (`Read`, etc.) do not collapse into empty `{}` arguments (`InputValidationError: file_path expected as string but provided as unknown`).

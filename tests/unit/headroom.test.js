@@ -288,7 +288,12 @@ describe("error tool result skip (pre-fetch)", () => {
 
   it("OpenAI explicit error shapes skip; plain text never triggers inference", async () => {
     // Explicit flag on tool message → skip.
-    const errBody = { messages: [{ role: "tool", tool_call_id: "t", content: "boom", is_error: true }] };
+    const errBody = {
+      messages: [
+        { role: "assistant", tool_calls: [{ id: "t", type: "function", function: { name: "bash", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "t", content: "boom", is_error: true },
+      ],
+    };
     const d1 = {};
     expect(await compressWithHeadroom(errBody, {
       enabled: true, url: "http://localhost:8787", model: "m", format: "openai", diagnostics: d1,
@@ -296,7 +301,12 @@ describe("error tool result skip (pre-fetch)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
 
     // Content merely SAYS "error" → must NOT skip.
-    const textOnly = { messages: [{ role: "tool", tool_call_id: "t", content: "the word error appears but flag absent" }] };
+    const textOnly = {
+      messages: [
+        { role: "assistant", tool_calls: [{ id: "t", type: "function", function: { name: "bash", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "t", content: "the word error appears but flag absent" },
+      ],
+    };
     fetchSpy.mockClear();
     await compressWithHeadroom(textOnly, {
       enabled: true, url: "http://localhost:8787", model: "m", format: "openai", diagnostics: {},

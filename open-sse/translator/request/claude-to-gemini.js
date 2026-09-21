@@ -16,6 +16,8 @@ import {
 } from "../formats/gemini.js";
 import { ROLE, CLAUDE_BLOCK, GEMINI_ROLE, DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { resolveFamily, getPromptInjection } from "../../providers/familyProfiles.js";
+import { getGeminiThoughtSignatureSync, signatureFamily } from "../../services/thoughtSignatureStore.js";
+import { wrapInCloudCodeEnvelope, convertToolChoice } from "./openai-to-gemini.js";
 
 // Local copy (same as open-sse/translator/request/openai-to-gemini.js):
 // Gemini requires ^[a-zA-Z_][a-zA-Z0-9_.:\-]{0,63}$.
@@ -42,20 +44,6 @@ function toolResultText(content) {
   }
   if (content) return JSON.stringify(content);
   return "";
-}
-
-function convertToolChoice(choice) {
-  if (!choice) return undefined;
-  if (typeof choice === "string") return { functionCallingConfig: { mode: "AUTO" } };
-  if (choice.type === "tool" && choice.name) {
-    return {
-      functionCallingConfig: {
-        mode: "ANY",
-        allowedFunctionNames: [sanitizeGeminiFunctionName(choice.name)],
-      },
-    };
-  }
-  return { functionCallingConfig: { mode: "AUTO" } };
 }
 
 export function claudeToGeminiRequest(model, body, stream, credentials) {
@@ -107,15 +95,26 @@ export function claudeToGeminiRequest(model, body, stream, credentials) {
         } else if (block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
           const text = block.thinking || block.text || "";
           if (text) parts.push({ thought: true, text });
-          if (block.signature) parts.push({ thoughtSignature: block.signature, text: "" });
+          if (block.signature) {
+            // Không đưa signature khác family sang Gemini
+            const fam = signatureFamily(model);
+            if (fam === "gemini") {
+              parts.push({ thoughtSignature: block.signature, text: "" });
+            }
+          }
         } else if (block.type === CLAUDE_BLOCK.TOOL_USE) {
-          parts.push({
+          const cachedSig = block.id ? getGeminiThoughtSignatureSync(block.id, credentials?._clientSessionId, model) : null;
+          const part = {
             functionCall: {
               id: block.id,
               name: sanitizeGeminiFunctionName(block.name),
               args: block.input || {},
             },
-          });
+          };
+          if (cachedSig) {
+            part.thoughtSignature = cachedSig;
+          }
+          parts.push(part);
         } else if (block.type === CLAUDE_BLOCK.TOOL_RESULT) {
           // One functionResponse per block — never merge duplicate ids.
           const name = toolUseIdToName[block.tool_use_id]
@@ -170,4 +169,12 @@ export function claudeToGeminiRequest(model, body, stream, credentials) {
   }
 }
 
+export function claudeToAntigravityRequest(model, body, stream, credentials) {
+  const gemini = claudeToGeminiRequest(model, body, stream, credentials);
+  return wrapInCloudCodeEnvelope(model, gemini, credentials, true);
+}
+
 register("claude", "gemini:gemini", claudeToGeminiRequest, null);
+register("claude", "gemini:antigravity", claudeToAntigravityRequest, null);
+register("claude", "gemini:gemini-cli", (model, body, stream, credentials) => wrapInCloudCodeEnvelope(model, claudeToGeminiRequest(model, body, stream, credentials), credentials, false), null);
+register("claude", "gemini:vertex", claudeToGeminiRequest, null);

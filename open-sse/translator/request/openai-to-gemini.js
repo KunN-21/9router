@@ -24,7 +24,7 @@ import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.j
 // Sanitize function names for Gemini API.
 // Gemini requires: starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 chars.
 // Replace any invalid character with '_' and truncate to 64.
-function sanitizeGeminiFunctionName(name) {
+export function sanitizeGeminiFunctionName(name) {
   if (!name) return "_unknown";
   // Replace any char not in [a-zA-Z0-9_.:\-] with '_'
   let sanitized = name.replace(/[^a-zA-Z0-9_.:\-]/g, "_");
@@ -34,6 +34,40 @@ function sanitizeGeminiFunctionName(name) {
   }
   // Truncate to 64 chars
   return sanitized.substring(0, 64);
+}
+
+export function convertToolChoice(choice) {
+  if (!choice) return undefined;
+  if (typeof choice === "string") {
+    const lower = choice.toLowerCase();
+    if (lower === "auto") return { functionCallingConfig: { mode: "AUTO" } };
+    if (lower === "none") return { functionCallingConfig: { mode: "NONE" } };
+    if (lower === "any" || lower === "required") return { functionCallingConfig: { mode: "ANY" } };
+    return { functionCallingConfig: { mode: "AUTO" } };
+  }
+  if (typeof choice === "object") {
+    const type = choice.type;
+    if (type === "auto") return { functionCallingConfig: { mode: "AUTO" } };
+    if (type === "none") return { functionCallingConfig: { mode: "NONE" } };
+    if (type === "any" || type === "required") return { functionCallingConfig: { mode: "ANY" } };
+    if (type === "tool" && choice.name) {
+      return {
+        functionCallingConfig: {
+          mode: "ANY",
+          allowedFunctionNames: [sanitizeGeminiFunctionName(choice.name)],
+        },
+      };
+    }
+    if (type === "function" && choice.function?.name) {
+      return {
+        functionCallingConfig: {
+          mode: "ANY",
+          allowedFunctionNames: [sanitizeGeminiFunctionName(choice.function.name)],
+        },
+      };
+    }
+  }
+  return undefined;
 }
 
 // Core: Convert OpenAI request to Gemini format (base for all variants)
@@ -78,7 +112,10 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
   if (body.messages && Array.isArray(body.messages)) {
     for (const msg of body.messages) {
       if (msg.role === ROLE.TOOL && msg.tool_call_id) {
-        toolResponses[msg.tool_call_id] = msg.content;
+        toolResponses[msg.tool_call_id] = {
+          content: msg.content,
+          isError: msg.is_error === true || msg.isError === true
+        };
       }
     }
   }
@@ -159,8 +196,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
           if (hasActualResponses || isIntermediate) {
             const toolParts = [];
             for (const fid of toolCallIds) {
-              let resp = toolResponses[fid];
-              if (resp === undefined) resp = "";
+              const respData = toolResponses[fid];
+              let resp = respData?.content !== undefined ? respData.content : "";
 
               let name = tcID2Name[fid];
               if (!name) {
@@ -179,11 +216,16 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
                 parsedResp = { result: parsedResp };
               }
 
+              const responseObj = { result: parsedResp };
+              if (respData?.isError) {
+                responseObj.isError = true;
+              }
+
               toolParts.push({
                 functionResponse: {
                   id: fid,
                   name: sanitizeGeminiFunctionName(name),
-                  response: { result: parsedResp }
+                  response: responseObj
                 }
               });
             }
@@ -228,6 +270,11 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     }
   }
 
+  const toolConfig = convertToolChoice(body.tool_choice);
+  if (toolConfig) {
+    result.toolConfig = toolConfig;
+  }
+
   result.contents = normalizeGeminiContents(result.contents);
   return result;
 }
@@ -262,7 +309,7 @@ export function openaiToGeminiCLIRequest(model, body, stream, credentials = null
 }
 
 // Wrap Gemini CLI format in Cloud Code wrapper
-function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigravity = false) {
+export function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigravity = false) {
   const projectId = credentials?.projectId || generateProjectId();
 
   const envelope = {
@@ -287,7 +334,9 @@ function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigra
     envelope.request.safetySettings = geminiCLI.safetySettings;
   }
 
-  if (geminiCLI.tools?.length > 0) {
+  if (geminiCLI.toolConfig) {
+    envelope.request.toolConfig = geminiCLI.toolConfig;
+  } else if (geminiCLI.tools?.length > 0) {
     envelope.request.toolConfig = {
       functionCallingConfig: { mode: "VALIDATED" }
     };
@@ -365,11 +414,13 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
             const resolvedName = toolUseIdToName[block.tool_use_id]
               ? sanitizeGeminiFunctionName(toolUseIdToName[block.tool_use_id])
               : "tool";
+            const responseObj = { result: tryParseJSON(content) || content };
+            if (block.is_error) responseObj.isError = true;
             parts.push({
               functionResponse: {
                 id: block.tool_use_id,
                 name: resolvedName,
-                response: { result: tryParseJSON(content) || content }
+                response: responseObj
               }
             });
           }
@@ -402,10 +453,16 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
     }
     if (functionDeclarations.length > 0) {
       envelope.request.tools = [{ functionDeclarations }];
-      envelope.request.toolConfig = {
-        functionCallingConfig: { mode: "VALIDATED" }
-      };
     }
+  }
+
+  const claudeToolConfig = convertToolChoice(claudeRequest.tool_choice);
+  if (claudeToolConfig) {
+    envelope.request.toolConfig = claudeToolConfig;
+  } else if (envelope.request.tools?.length > 0) {
+    envelope.request.toolConfig = {
+      functionCallingConfig: { mode: "VALIDATED" }
+    };
   }
 
   const systemParts = [];

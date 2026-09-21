@@ -26,50 +26,64 @@ describe("provider quota visibility", () => {
     },
   };
 
-  it("groups Antigravity model quotas into Gemini and Claude families", () => {
+  it("hides per-model mirror rows; only native summary windows render", () => {
     const quotas = parseQuotaData("antigravity", data);
-    expect(quotas.map((q) => q.modelKey)).toEqual([
-      "gemini",
-      "claude",
-    ]);
-    expect(quotas[0].name).toBe("Gemini (Flash / Pro)");
-    expect(quotas[1].name).toBe("Claude (Sonnet / Opus)");
+    expect(quotas).toEqual([]);
   });
 
   it("shows all quotas by default and hides configured provider rows", () => {
-    const quotas = parseQuotaData("antigravity", data);
-    expect(filterQuotasByVisibility("antigravity", quotas, {})).toHaveLength(2);
+    const windowed = {
+      quotas: {
+        ...data.quotas,
+        gemini_5h: { displayName: "Gemini (5h)", used: 100, total: 1000, resetAt: "2026-07-04T05:00:00Z", remainingPercentage: 90 },
+        gemini_weekly: { displayName: "Gemini Weekly", used: 200, total: 1000, resetAt: "2026-07-11T00:00:00Z", remainingPercentage: 80 },
+      },
+    };
+    const quotas = parseQuotaData("antigravity", windowed);
+    expect(quotas.map((q) => q.modelKey)).toEqual(["gemini_5h", "gemini_weekly"]);
 
     const visibility = {
-      antigravity: { hidden: ["claude"] },
+      antigravity: { hidden: ["gemini_weekly"] },
     };
     const visible = filterQuotasByVisibility("antigravity", quotas, visibility);
     const hidden = getHiddenQuotaRows("antigravity", quotas, visibility);
 
-    expect(visible.map((q) => q.modelKey)).toEqual(["gemini"]);
-    expect(hidden.map((q) => q.modelKey)).toEqual(["claude"]);
+    expect(visible.map((q) => q.modelKey)).toEqual(["gemini_5h"]);
+    expect(hidden.map((q) => q.modelKey)).toEqual(["gemini_weekly"]);
   });
 
   it("trims stale or obsolete model keys", () => {
-    const quotas = parseQuotaData("antigravity", data);
-    const trimmed = trimHiddenQuotaKeys(["claude", "stale-model-xyz", "gemini-3.8-flash-low"], quotas);
-    expect(trimmed).toEqual(["claude"]);
+    const windowed = {
+      quotas: {
+        ...data.quotas,
+        gemini_5h: { displayName: "Gemini (5h)", used: 100, total: 1000, resetAt: "2026-07-04T05:00:00Z", remainingPercentage: 90 },
+      },
+    };
+    const quotas = parseQuotaData("antigravity", windowed);
+    const trimmed = trimHiddenQuotaKeys(["gemini_5h", "stale-model-xyz", "gemini-3.8-flash-low"], quotas);
+    expect(trimmed).toEqual(["gemini_5h"]);
 
     const visibility = {
-      antigravity: { hidden: ["claude", "stale-model-xyz"] },
+      antigravity: { hidden: ["gemini_5h", "stale-model-xyz"] },
     };
     const visible = filterQuotasByVisibility("antigravity", quotas, visibility);
     const hidden = getHiddenQuotaRows("antigravity", quotas, visibility);
 
-    expect(visible.map((q) => q.modelKey)).toEqual(["gemini"]);
-    expect(hidden.map((q) => q.modelKey)).toEqual(["claude"]);
+    expect(visible).toEqual([]);
+    expect(hidden.map((q) => q.modelKey)).toEqual(["gemini_5h"]);
   });
 
   it("does not apply one provider hidden list to another provider", () => {
-    const quotas = parseQuotaData("antigravity", data);
-    const visibility = {
-      codex: { hidden: ["gemini"] },
+    const windowed = {
+      quotas: {
+        ...data.quotas,
+        gemini_5h: { displayName: "Gemini (5h)", used: 100, total: 1000, resetAt: "2026-07-04T05:00:00Z", remainingPercentage: 90 },
+      },
     };
-    expect(filterQuotasByVisibility("antigravity", quotas, visibility)).toHaveLength(2);
+    const quotas = parseQuotaData("antigravity", windowed);
+    const visibility = {
+      codex: { hidden: ["gemini_5h"] },
+    };
+    expect(filterQuotasByVisibility("antigravity", quotas, visibility)).toHaveLength(1);
   });
 });

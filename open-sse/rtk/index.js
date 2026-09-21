@@ -3,6 +3,7 @@
 import { RAW_CAP, MIN_COMPRESS_SIZE } from "./constants.js";
 import { autoDetectFilter } from "./autodetect.js";
 import { safeApply } from "./applyFilter.js";
+import { isProtectedTool, isUnknownTool, getToolCallMap } from "./guard.js";
 
 // Compress tool_result content in-place. Returns stats or null if disabled/failed.
 export function compressMessages(body, enabled) {
@@ -26,6 +27,7 @@ export function compressMessages(body, enabled) {
     : null;
   if (!items) return null;
 
+  const toolCallMap = getToolCallMap(body);
   const stats = { bytesBefore: 0, bytesAfter: 0, hits: [] };
   try {
     for (let i = 0; i < items.length; i++) {
@@ -34,13 +36,18 @@ export function compressMessages(body, enabled) {
 
       // Shape 4: OpenAI Responses — top-level { type:"function_call_output", output: string | [{type:"input_text", text}] }
       if (msg.type === "function_call_output") {
+        if (msg.is_error === true || msg.status === "error" || msg.isError === true) continue;
+        const toolName = msg.name || toolCallMap.get(msg.call_id) || "";
+        if (isProtectedTool(toolName)) continue;
+        const isUnknown = isUnknownTool(toolName);
+
         if (typeof msg.output === "string") {
-          msg.output = compressText(msg.output, stats, "openai-responses-string");
+          msg.output = compressText(msg.output, stats, "openai-responses-string", isUnknown);
         } else if (Array.isArray(msg.output)) {
           for (let k = 0; k < msg.output.length; k++) {
             const part = msg.output[k];
             if (part && part.type === "input_text" && typeof part.text === "string") {
-              part.text = compressText(part.text, stats, "openai-responses-array");
+              part.text = compressText(part.text, stats, "openai-responses-array", isUnknown);
             }
           }
         }
@@ -49,7 +56,11 @@ export function compressMessages(body, enabled) {
 
       // Shape 1: OpenAI tool message — { role:"tool", content: "string" }
       if (msg.role === "tool" && typeof msg.content === "string") {
-        msg.content = compressText(msg.content, stats, "openai-tool");
+        if (msg.is_error === true || msg.status === "error" || msg.isError === true) continue;
+        const toolName = msg.name || toolCallMap.get(msg.tool_call_id) || "";
+        if (isProtectedTool(toolName)) continue;
+        const isUnknown = isUnknownTool(toolName);
+        msg.content = compressText(msg.content, stats, "openai-tool", isUnknown);
         continue;
       }
 
@@ -57,10 +68,14 @@ export function compressMessages(body, enabled) {
 
       // Shape 1b: OpenAI tool message — { role:"tool", content:[{type:"text", text:"..."}] }
       if (msg.role === "tool") {
+        if (msg.is_error === true || msg.status === "error" || msg.isError === true) continue;
+        const toolName = msg.name || toolCallMap.get(msg.tool_call_id) || "";
+        if (isProtectedTool(toolName)) continue;
+        const isUnknown = isUnknownTool(toolName);
         for (let k = 0; k < msg.content.length; k++) {
           const part = msg.content[k];
           if (part && part.type === "text" && typeof part.text === "string") {
-            part.text = compressText(part.text, stats, "openai-tool-array");
+            part.text = compressText(part.text, stats, "openai-tool-array", isUnknown);
           }
         }
         continue;
@@ -70,17 +85,21 @@ export function compressMessages(body, enabled) {
       for (let j = 0; j < msg.content.length; j++) {
         const block = msg.content[j];
         if (!block || block.type !== "tool_result") continue;
-        if (block.is_error === true) continue; // preserve error traces
+        if (block.is_error === true || block.status === "error" || block.isError === true) continue; // preserve error traces
+
+        const toolName = block.name || toolCallMap.get(block.tool_use_id) || "";
+        if (isProtectedTool(toolName)) continue;
+        const isUnknown = isUnknownTool(toolName);
 
         if (typeof block.content === "string") {
           // Shape 2: claude string form
-          block.content = compressText(block.content, stats, "claude-string");
+          block.content = compressText(block.content, stats, "claude-string", isUnknown);
         } else if (Array.isArray(block.content)) {
           // Shape 3: claude array form — compress each text part
           for (let k = 0; k < block.content.length; k++) {
             const part = block.content[k];
             if (part && part.type === "text" && typeof part.text === "string") {
-              part.text = compressText(part.text, stats, "claude-array");
+              part.text = compressText(part.text, stats, "claude-array", isUnknown);
             }
           }
         }
@@ -96,6 +115,7 @@ export function compressMessages(body, enabled) {
 // Compress Kiro format: conversationState.history[].userInputMessage.userInputMessageContext.toolResults[].content[].text
 function compressKiroFormat(body, enabled) {
   const stats = { bytesBefore: 0, bytesAfter: 0, hits: [] };
+  const toolCallMap = getToolCallMap(body);
   try {
     const state = body.conversationState;
     const allMessages = [...(Array.isArray(state?.history) ? state.history : [])];
@@ -106,12 +126,16 @@ function compressKiroFormat(body, enabled) {
       if (!Array.isArray(toolResults)) continue;
 
       for (const tr of toolResults) {
-        if (tr.status === "error") continue; // preserve error traces
+        if (tr.status === "error" || tr.is_error === true || tr.isError === true) continue; // preserve error traces
+        const toolName = tr.name || toolCallMap.get(tr.toolUseId) || "";
+        if (isProtectedTool(toolName)) continue;
+        const isUnknown = isUnknownTool(toolName);
+
         if (!Array.isArray(tr.content)) continue;
 
         for (const part of tr.content) {
           if (part && typeof part.text === "string") {
-            part.text = compressText(part.text, stats, "kiro-tool-result");
+            part.text = compressText(part.text, stats, "kiro-tool-result", isUnknown);
           }
         }
       }
@@ -130,6 +154,7 @@ function compressKiroFormat(body, enabled) {
 // body.request; mutate in place on the live array so both paths are covered.
 function compressGeminiFormat(body, enabled) {
   const stats = { bytesBefore: 0, bytesAfter: 0, hits: [] };
+  const toolCallMap = getToolCallMap(body);
   try {
     const contents = Array.isArray(body.contents)
       ? body.contents
@@ -147,13 +172,17 @@ function compressGeminiFormat(body, enabled) {
         if (!fr || typeof fr !== "object") continue;
         // Skip explicit error results — preserve error traces.
         const resp = fr.response;
-        if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error")) continue;
+        if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error" || resp.is_error === true)) continue;
+
+        const toolName = fr.name || toolCallMap.get(fr.id) || "";
+        if (isProtectedTool(toolName)) continue;
+        const isUnknown = isUnknownTool(toolName);
 
         const result = resp?.result;
         if (typeof result === "string") {
-          resp.result = compressText(result, stats, "gemini-function-response");
+          resp.result = compressText(result, stats, "gemini-function-response", isUnknown);
         } else if (result && typeof result === "object" && typeof result.text === "string") {
-          result.text = compressText(result.text, stats, "gemini-function-response");
+          result.text = compressText(result.text, stats, "gemini-function-response", isUnknown);
         }
       }
     }
@@ -164,8 +193,8 @@ function compressGeminiFormat(body, enabled) {
   return stats;
 }
 
-function compressText(text, stats, shape) {
-  const bytesIn = text.length;
+function compressText(text, stats, shape, isUnknown = false) {
+  const bytesIn = Buffer.byteLength(text, "utf8");
   stats.bytesBefore += bytesIn;
 
   if (bytesIn < MIN_COMPRESS_SIZE || bytesIn > RAW_CAP) {
@@ -179,16 +208,23 @@ function compressText(text, stats, shape) {
     return text;
   }
 
-  const out = safeApply(fn, text);
-
-  // Safety: never return empty, never grow the input
-  if (!out || out.length === 0 || out.length >= bytesIn) {
+  // Fail-open: do not apply generic fallbacks (smartTruncate, dedupLog) on unknown tool output
+  if (isUnknown && (fn.filterName === "smart-truncate" || fn.filterName === "dedup-log")) {
     stats.bytesAfter += bytesIn;
     return text;
   }
 
-  stats.bytesAfter += out.length;
-  stats.hits.push({ shape, filter: fn.filterName || fn.name, saved: bytesIn - out.length });
+  const out = safeApply(fn, text);
+
+  // Safety: never return empty, never grow the input
+  const bytesOut = typeof out === "string" ? Buffer.byteLength(out, "utf8") : bytesIn;
+  if (!out || out.length === 0 || bytesOut >= bytesIn) {
+    stats.bytesAfter += bytesIn;
+    return text;
+  }
+
+  stats.bytesAfter += bytesOut;
+  stats.hits.push({ shape, filter: fn.filterName || fn.name, saved: bytesIn - bytesOut });
   return out;
 }
 

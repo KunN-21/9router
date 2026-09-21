@@ -4,6 +4,7 @@ import {
   openaiResponsesToOpenAIRequest,
   openaiToOpenAIResponsesRequest,
 } from "../translator/request/openai-responses.js";
+import { isProtectedTool, isUnknownTool, getToolCallMap } from "./guard.js";
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -284,7 +285,7 @@ function hasUnsafeResponsesInputForCompression(body) {
 }
 
 // Detect an explicit error tool result anywhere in the request. Only explicit
-// error shapes count (is_error / status:"error") — never infer from content text.
+// error shapes count (is_error / status:"error" / isError) — never infer from content text.
 function hasErrorToolBlock(body, format) {
   try {
     // Claude: tool_result blocks carry is_error on the block.
@@ -296,14 +297,14 @@ function hasErrorToolBlock(body, format) {
         : typeof content === "object" && content !== null ? [content] : [];
       for (const part of parts) {
         if (part?.type === "tool_result" && (hasClaudeToolResult || message?.role === "tool")) {
-          if (part.is_error === true) return true;
+          if (part.is_error === true || part.status === "error" || part.isError === true) return true;
         }
-        if ((part?.is_error === true || part?.status === "error") && (part?.type === "tool_result" || message?.role === "tool")) {
+        if ((part?.is_error === true || part?.status === "error" || part?.isError === true) && (part?.type === "tool_result" || message?.role === "tool")) {
           return true;
         }
       }
       if (message?.role === "tool") {
-        if (message.is_error === true || message.status === "error") return true;
+        if (message.is_error === true || message.status === "error" || message.isError === true) return true;
       }
     }
     // Kiro: toolResults carry status.
@@ -314,14 +315,14 @@ function hasErrorToolBlock(body, format) {
         const toolResults = item?.userInputMessage?.userInputMessageContext?.toolResults;
         if (!Array.isArray(toolResults)) continue;
         for (const tr of toolResults) {
-          if (tr?.status === "error" || tr?.isError === true) return true;
+          if (tr?.status === "error" || tr?.isError === true || tr?.is_error === true) return true;
         }
       }
     }
     // OpenAI Responses: function_call_output items carry status/is_error.
     if (format === "openai-responses" && Array.isArray(body?.input)) {
       for (const item of body.input) {
-        if (item?.type === "function_call_output" && (item.status === "error" || item.is_error === true)) return true;
+        if (item?.type === "function_call_output" && (item.status === "error" || item.is_error === true || item.isError === true)) return true;
       }
     }
     // Gemini-family: functionResponse.response carries isError/status.
@@ -331,7 +332,69 @@ function hasErrorToolBlock(body, format) {
       for (const content of contents) {
         for (const part of (Array.isArray(content?.parts) ? content.parts : [])) {
           const resp = part?.functionResponse?.response;
-          if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error")) return true;
+          if (resp && typeof resp === "object" && (resp.isError === true || resp.status === "error" || resp.is_error === true)) return true;
+        }
+      }
+    }
+  } catch { /* fail-open */ }
+  return false;
+}
+
+// Detect protected (Read, Grep, Edit, Write, patch, anchor) or unknown tool results.
+// Headroom skips compressing the entire request when present to avoid lossy rewriting.
+function hasProtectedOrUnknownToolBlock(body, format) {
+  try {
+    const toolCallMap = getToolCallMap(body);
+
+    for (const message of body?.messages || []) {
+      if (message?.role === "tool") {
+        const toolName = message.name || toolCallMap.get(message.tool_call_id) || "";
+        if (isProtectedTool(toolName) || isUnknownTool(toolName)) return true;
+      }
+      const content = message?.content;
+      const parts = Array.isArray(content)
+        ? content
+        : typeof content === "object" && content !== null ? [content] : [];
+      for (const part of parts) {
+        if (part?.type === "tool_result") {
+          const toolName = part.name || toolCallMap.get(part.tool_use_id) || "";
+          if (isProtectedTool(toolName) || isUnknownTool(toolName)) return true;
+        }
+      }
+    }
+
+    if (Array.isArray(body?.input)) {
+      for (const item of body.input) {
+        if (item?.type === "function_call_output") {
+          const toolName = item.name || toolCallMap.get(item.call_id) || "";
+          if (isProtectedTool(toolName) || isUnknownTool(toolName)) return true;
+        }
+      }
+    }
+
+    const state = body?.conversationState;
+    if (state && typeof state === "object") {
+      const items = [...(Array.isArray(state.history) ? state.history : []), state.currentMessage].filter(Boolean);
+      for (const item of items) {
+        const toolResults = item?.userInputMessage?.userInputMessageContext?.toolResults;
+        if (Array.isArray(toolResults)) {
+          for (const tr of toolResults) {
+            const toolName = tr.name || toolCallMap.get(tr.toolUseId) || "";
+            if (isProtectedTool(toolName) || isUnknownTool(toolName)) return true;
+          }
+        }
+      }
+    }
+
+    const contents = Array.isArray(body?.contents) ? body.contents : body?.request?.contents;
+    if (Array.isArray(contents)) {
+      for (const content of contents) {
+        for (const part of (Array.isArray(content?.parts) ? content.parts : [])) {
+          const fr = part?.functionResponse;
+          if (fr && typeof fr === "object") {
+            const toolName = fr.name || toolCallMap.get(fr.id) || "";
+            if (isProtectedTool(toolName) || isUnknownTool(toolName)) return true;
+          }
         }
       }
     }
@@ -644,6 +707,10 @@ export async function compressWithHeadroom(body, { enabled, url, model, format, 
     if (diagnostics) diagnostics.before = captureSizeSnapshot(body);
     if (hasErrorToolBlock(body, format)) {
       setDiagnostic(diagnostics, "skipped: error tool result present — headroom not applied");
+      return null;
+    }
+    if (hasProtectedOrUnknownToolBlock(body, format)) {
+      setDiagnostic(diagnostics, "skipped: protected or unknown tool result present — headroom not applied");
       return null;
     }
 

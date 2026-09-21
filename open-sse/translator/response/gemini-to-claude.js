@@ -87,7 +87,7 @@ export function geminiToClaudeResponse(chunk, state) {
       if (hasThoughtSig && typeof hasThoughtSig === "string") {
         state.pendingThoughtSignature = hasThoughtSig;
       }
-      const isThought = part.thought === true || !!hasThoughtSig;
+      const isThought = part.thought === true;
 
       // Thinking content
       if (isThought && part.text !== undefined && part.text !== "") {
@@ -208,3 +208,4 @@ export function geminiToClaudeResponse(chunk, state) {
 }
 
 register(FORMATS.GEMINI, FORMATS.CLAUDE, null, geminiToClaudeResponse);
+register(FORMATS.ANTIGRAVITY, FORMATS.CLAUDE, null, geminiToClaudeResponse);

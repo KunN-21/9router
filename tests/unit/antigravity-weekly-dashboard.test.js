@@ -39,8 +39,8 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     const quotas = parseQuotaData("antigravity", data);
     const names = quotas.map((q) => q.name);
 
-    expect(names).toContain("Gemini (Flash / Pro)");
-    expect(names).toContain("Claude (Sonnet / Opus)");
+    expect(names).not.toContain("Gemini (Flash / Pro)");
+    expect(names).not.toContain("Claude (Sonnet / Opus)");
     expect(names).toContain("Gemini Weekly");
     expect(names).toContain("Claude & GPT Weekly");
   });
@@ -82,20 +82,16 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     expect(weeklyRows[1].name).toMatch(/Weekly/);
   });
 
-  it("order: gemini family, claude family, weekly, then other", () => {
+  it("order: weekly windows, then other (no per-model mirror rows)", () => {
     const quotas = parseQuotaData("antigravity", data);
     const keys = quotas.map((q) => q.modelKey);
 
-    const geminiIdx = keys.indexOf("gemini");
-    const claudeIdx = keys.indexOf("claude");
-    const geminiWeeklyIdx = keys.indexOf("gemini_weekly");
-    const claudeWeeklyIdx = keys.indexOf("claude_gpt_weekly");
-
-    expect(geminiIdx).toBeLessThan(geminiWeeklyIdx);
-    expect(claudeIdx).toBeLessThan(claudeWeeklyIdx);
+    expect(keys).not.toContain("gemini");
+    expect(keys).not.toContain("claude");
+    expect(keys.indexOf("gemini_weekly")).toBeLessThan(keys.indexOf("claude_gpt_weekly"));
   });
 
-  it("works with no weekly keys present (backward compat)", () => {
+  it("per-model mirror rows render nothing without summary windows", () => {
     const noWeekly = {
       quotas: {
         "gemini-pro-agent": {
@@ -107,7 +103,6 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
       },
     };
     const quotas = parseQuotaData("antigravity", noWeekly);
-    expect(quotas).toHaveLength(1);
-    expect(quotas[0].name).toBe("Gemini (Flash / Pro)");
+    expect(quotas).toEqual([]);
   });
 });

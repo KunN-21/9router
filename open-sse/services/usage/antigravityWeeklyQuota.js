@@ -21,6 +21,51 @@ const inflightRequests = new Map();
  * @param {object} summaryData - Raw API response JSON
  * @returns {Record<string, object>} Quotas map keyed by gemini_weekly / claude_gpt_weekly
  */
+/**
+ * Find a bucket in a group by explicit window value, bucketId, or displayName.
+ * @param {Array} buckets - Group buckets
+ * @param {string} window - "5h" or "weekly"
+ * @returns {object|null}
+ */
+function findBucketByWindow(buckets, window) {
+  if (!Array.isArray(buckets)) return null;
+  const want = String(window || "").toLowerCase();
+  const patterns = want === "5h"
+    ? [/\b5h\b/i, /five[\s_-]?hour/i, /300m/i]
+    : [/\bweekly\b/i, /\bweek\b/i, /\b7d\b/i, /168h/i];
+
+  for (const b of buckets) {
+    if (!b || typeof b !== "object") continue;
+    if (String(b.window || "").toLowerCase() === want) return b;
+  }
+  for (const b of buckets) {
+    if (!b || typeof b !== "object") continue;
+    const id = typeof b.bucketId === "string" ? b.bucketId : "";
+    const name = typeof b.displayName === "string" ? b.displayName : "";
+    if (patterns.some((re) => re.test(id) || re.test(name))) return b;
+  }
+  return null;
+}
+
+function bucketToQuota(bucket) {
+  if (!bucket || typeof bucket !== "object") return null;
+  if (bucket.disabled === true) return null;
+  if (bucket.remainingFraction == null) return null;
+  const rawFraction = Number(bucket.remainingFraction);
+  if (!Number.isFinite(rawFraction)) return null;
+  const remainingFraction = Math.max(0, Math.min(1, rawFraction));
+  const total = 1000; // Normalized base matching 9Router convention
+  const remaining = Math.round(total * remainingFraction);
+  const used = Math.max(0, total - remaining);
+  return {
+    used,
+    total,
+    resetAt: parseResetTime(bucket.resetTime),
+    remainingPercentage: remainingFraction * 100,
+    unlimited: false,
+  };
+}
+
 export function parseAntigravityWeeklyQuotas(summaryData) {
   if (!summaryData || typeof summaryData !== "object") return {};
 
@@ -28,6 +73,8 @@ export function parseAntigravityWeeklyQuotas(summaryData) {
     ? summaryData.groups
     : Array.isArray(summaryData?.quotaSummary?.groups)
     ? summaryData.quotaSummary.groups
+    : Array.isArray(summaryData?.response?.groups)
+    ? summaryData.response.groups
     : null;
 
   if (!groups || groups.length === 0) return {};
@@ -38,66 +85,33 @@ export function parseAntigravityWeeklyQuotas(summaryData) {
     if (!group || typeof group !== "object" || !Array.isArray(group.buckets)) continue;
 
     const displayName = String(group.displayName || "").trim();
-    let familyKey = null;
-    let familyDisplayName = null;
+    let familyPrefix = null;
 
     if (displayName === "Gemini Models") {
-      familyKey = "gemini_weekly";
-      familyDisplayName = "Gemini Weekly";
+      familyPrefix = "gemini";
     } else if (displayName === "Claude and GPT models") {
-      familyKey = "claude_gpt_weekly";
-      familyDisplayName = "Claude & GPT Weekly";
+      familyPrefix = "claude_gpt";
     } else {
       // Ignore unknown Google family groups safely
       continue;
     }
 
-    // Identify weekly bucket:
-    // Priority 1: explicit window === "weekly"
-    // Priority 2 (fallback): conservative /\bweekly\b/i on bucketId or displayName
-    let weeklyBucket = null;
-
-    for (const b of group.buckets) {
-      if (!b || typeof b !== "object") continue;
-      if (b.window === "weekly") {
-        weeklyBucket = b;
-        break;
-      }
+    const isGemini = familyPrefix === "gemini";
+    const fiveHour = bucketToQuota(findBucketByWindow(group.buckets, "5h"));
+    if (fiveHour) {
+      quotas[isGemini ? "gemini_5h" : "claude_gpt_5h"] = {
+        ...fiveHour,
+        displayName: isGemini ? "Gemini (5h)" : "Claude & GPT (5h)",
+      };
     }
 
-    if (!weeklyBucket) {
-      for (const b of group.buckets) {
-        if (!b || typeof b !== "object") continue;
-        const idMatch = typeof b.bucketId === "string" && /\bweekly\b/i.test(b.bucketId);
-        const nameMatch = typeof b.displayName === "string" && /\bweekly\b/i.test(b.displayName);
-        if (idMatch || nameMatch) {
-          weeklyBucket = b;
-          break;
-        }
-      }
+    const weekly = bucketToQuota(findBucketByWindow(group.buckets, "weekly"));
+    if (weekly) {
+      quotas[isGemini ? "gemini_weekly" : "claude_gpt_weekly"] = {
+        ...weekly,
+        displayName: isGemini ? "Gemini Weekly" : "Claude & GPT Weekly",
+      };
     }
-
-    if (!weeklyBucket) continue;
-    if (weeklyBucket.disabled === true) continue;
-    if (weeklyBucket.remainingFraction == null) continue;
-
-    const rawFraction = Number(weeklyBucket.remainingFraction);
-    if (!Number.isFinite(rawFraction)) continue;
-
-    const remainingFraction = Math.max(0, Math.min(1, rawFraction));
-    const total = 1000; // Normalized base matching 9Router convention
-    const remaining = Math.round(total * remainingFraction);
-    const used = Math.max(0, total - remaining);
-    const remainingPercentage = remainingFraction * 100;
-
-    quotas[familyKey] = {
-      used,
-      total,
-      resetAt: parseResetTime(weeklyBucket.resetTime),
-      remainingPercentage,
-      unlimited: false,
-      displayName: familyDisplayName,
-    };
   }
 
   return quotas;

@@ -213,13 +213,17 @@ export class AntigravityExecutor extends BaseExecutor {
         if (!p.functionCall) return p;
         const callId = p.functionCall.id;
         const cachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId, body.model || model) : null;
-        const callSig = p.thoughtSignature || cachedSig || (!firstFunctionCallSeen ? DEFAULT_THINKING_AG_SIGNATURE : undefined);
+        const rawCachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId, null) : null;
+        const hasIncompatibleSig = rawCachedSig && !cachedSig;
+
+        const existingSig = hasIncompatibleSig ? null : p.thoughtSignature;
+        const callSig = existingSig || cachedSig || (!firstFunctionCallSeen ? DEFAULT_THINKING_AG_SIGNATURE : undefined);
         firstFunctionCallSeen = true;
         if (callSig) {
           return { ...p, thoughtSignature: callSig };
         }
-        if (p.thoughtSignature && !cachedSig) {
-          // Unsigned sibling call
+        if (p.thoughtSignature) {
+          // Unsigned sibling call or incompatible signature
           const { thoughtSignature: _, ...rest } = p;
           return rest;
         }
@@ -278,6 +282,10 @@ export class AntigravityExecutor extends BaseExecutor {
       generationConfig.maxOutputTokens = MAX_ANTIGRAVITY_OUTPUT_TOKENS;
     }
 
+    const toolConfig = _originalToolConfig
+      ? _originalToolConfig
+      : (tools?.length > 0 ? { functionCallingConfig: { mode: "VALIDATED" } } : undefined);
+
     const transformedRequest = {
       ...requestWithoutTools,
       generationConfig,
@@ -285,7 +293,7 @@ export class AntigravityExecutor extends BaseExecutor {
       ...(tools && { tools }),
       sessionId,
       safetySettings: undefined,
-      ...(tools?.length > 0 && { toolConfig: { functionCallingConfig: { mode: "VALIDATED" } } })
+      ...(toolConfig && { toolConfig })
     };
 
     // Strip blacklisted thinking fields from top-level body (set by thinkingUnified.js at root, not body.request)
