@@ -9,7 +9,7 @@
  */
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { CLAUDE_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import { CLAUDE_BLOCK, RESPONSES_ITEM, CLAUDE_STOP } from "../schema/index.js";
 import { sanitizeToolArgs } from "../concerns/toolArgs.js";
 
 function stopThinkingBlock(state, results) {
@@ -199,45 +199,77 @@ export function responsesToClaudeResponse(chunk, state) {
     return results.length > 0 ? results : null;
   }
 
-  // Response completed / done
-  if (eventType === "response.completed" || eventType === "response.done") {
+  // Response completed / done / incomplete
+  if (eventType === "response.completed" || eventType === "response.done" || eventType === "response.incomplete") {
     stopThinkingBlock(state, results);
     stopTextBlock(state, results);
+
+    const status = data.response?.status || data.status;
+    const statusDetails = data.response?.status_details || data.status_details || data.response?.incomplete_details || data.incomplete_details;
+    const reason = statusDetails?.reason;
+    const isIncomplete = eventType === "response.incomplete" || status === "incomplete";
+    const isMaxTokens = isIncomplete && (reason === "max_output_tokens" || reason === "max_tokens" || !reason);
 
     // Close any unclosed tool calls
     for (const [blockIndex, toolInfo] of state.toolCalls) {
       if (!toolInfo.closed) {
         toolInfo.closed = true;
-        const buffered = state.toolArgBuffers.get(blockIndex) || "{}";
-        const sanitized = sanitizeToolArgs(toolInfo.name, buffered);
-        results.push({
-          type: "content_block_delta",
-          index: blockIndex,
-          delta: { type: "input_json_delta", partial_json: sanitized },
-        });
-        results.push({
-          type: "content_block_stop",
-          index: blockIndex,
-        });
+        if (isIncomplete) {
+          const rawBuffered = state.toolArgBuffers.get(blockIndex) || "";
+          const buffered = rawBuffered || sanitizeToolArgs(toolInfo.name, "{}");
+          results.push({
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "input_json_delta", partial_json: buffered },
+          });
+          results.push({
+            type: "content_block_stop",
+            index: blockIndex,
+          });
+        } else {
+          const buffered = state.toolArgBuffers.get(blockIndex) || "{}";
+          const sanitized = sanitizeToolArgs(toolInfo.name, buffered);
+          results.push({
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "input_json_delta", partial_json: sanitized },
+          });
+          results.push({
+            type: "content_block_stop",
+            index: blockIndex,
+          });
+        }
       }
     }
 
     // Extract usage
-    const responseUsage = data.response?.usage;
+    const responseUsage = data.response?.usage || data.usage;
     if (responseUsage && typeof responseUsage === "object") {
       const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;
       const outputTokens = responseUsage.output_tokens || responseUsage.completion_tokens || 0;
       const cacheRead = responseUsage.input_tokens_details?.cached_tokens || responseUsage.cache_read_input_tokens || 0;
+      const cacheCreate = responseUsage.input_tokens_details?.cache_creation_tokens || responseUsage.cache_creation_input_tokens || 0;
+      const reasoningTokens = responseUsage.output_tokens_details?.reasoning_tokens || responseUsage.completion_tokens_details?.reasoning_tokens || responseUsage.reasoning_tokens || 0;
+
       state.usage = {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         ...(cacheRead ? { cache_read_input_tokens: cacheRead } : {}),
+        ...(cacheCreate ? { cache_creation_input_tokens: cacheCreate } : {}),
       };
+      if (reasoningTokens > 0) {
+        state.reasoningTokens = reasoningTokens;
+      }
     }
 
     if (!state.finishReasonSent) {
       state.finishReasonSent = true;
-      const stopReason = state.toolCalls.size > 0 ? "tool_use" : "end_turn";
+      const stopReason = isMaxTokens
+        ? CLAUDE_STOP.MAX_TOKENS
+        : state.toolCalls.size > 0
+          ? CLAUDE_STOP.TOOL_USE
+          : CLAUDE_STOP.END_TURN;
+
       results.push({
         type: "message_delta",
         delta: { stop_reason: stopReason },
@@ -250,33 +282,17 @@ export function responsesToClaudeResponse(chunk, state) {
 
   // Error / failure
   if (eventType === "error" || eventType === "response.failed") {
-    if (!state.finishReasonSent) {
-      state.finishReasonSent = true;
-      const error = data.error || data.response?.error;
-      const errText = `[Error] ${error?.message || JSON.stringify(error || "Unknown error")}`;
-      stopThinkingBlock(state, results);
-      if (!state.textBlockStarted) {
-        state.textBlockIndex = state.nextBlockIndex++;
-        results.push({
-          type: "content_block_start",
-          index: state.textBlockIndex,
-          content_block: { type: "text", text: "" },
-        });
+    if (state.errorSent) return null;
+    state.errorSent = true;
+    state.finishReasonSent = true;
+    const error = data.error || data.response?.error || { message: "Upstream error", type: "api_error" };
+    return [{
+      type: "error",
+      error: {
+        type: error.type || "api_error",
+        message: error.message || "Upstream error",
       }
-      results.push({
-        type: "content_block_delta",
-        index: state.textBlockIndex,
-        delta: { type: "text_delta", text: errText },
-      });
-      results.push({ type: "content_block_stop", index: state.textBlockIndex });
-      results.push({
-        type: "message_delta",
-        delta: { stop_reason: "end_turn" },
-        usage: { input_tokens: 0, output_tokens: 0 },
-      });
-      results.push({ type: "message_stop" });
-    }
-    return results.length > 0 ? results : null;
+    }];
   }
 
   return results.length > 0 ? results : null;

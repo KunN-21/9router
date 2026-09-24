@@ -54,6 +54,12 @@ function asBlocks(content) {
   return [];
 }
 
+function normalizeToolParameters(params) {
+  if (!params) return { type: "object", properties: {} };
+  if (params.type === "object" && !params.properties) return { ...params, properties: {} };
+  return params;
+}
+
 export function claudeToResponsesRequest(model, body, stream, credentials) {
   try {
     const src = body && typeof body === "object" ? body : {};
@@ -155,7 +161,7 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
           type: OPENAI_BLOCK.FUNCTION,
           name,
           description: String(tool.description || ""),
-          parameters: tool.input_schema || { type: "object", properties: {} },
+          parameters: normalizeToolParameters(tool.input_schema),
         });
       }
       if (tools.length > 0) result.tools = tools;

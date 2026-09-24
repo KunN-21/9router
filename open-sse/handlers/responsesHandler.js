@@ -8,6 +8,8 @@ import { convertResponsesApiFormat } from "../translator/formats/responsesApi.js
 import { createResponsesApiTransformStream } from "../transformer/responsesTransformer.js";
 import { convertResponsesStreamToJson } from "../transformer/streamToJsonConverter.js";
 import { SSE_HEADERS_CORS } from "../utils/sseConstants.js";
+import { errorResponse } from "../utils/error.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 /**
  * Handle /v1/responses request
@@ -57,6 +59,18 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
   if (!clientRequestedStreaming && contentType.includes("text/event-stream")) {
     try {
       const jsonResponse = await convertResponsesStreamToJson(response.body);
+
+      // Error contract: a failed transport outcome must never surface as a
+      // success body. Mirror handleNonStreamingResponse: failed/incomplete
+      // without a terminal outcome returns 502 before any success hook runs.
+      if (!jsonResponse || jsonResponse.status === "failed") {
+        return {
+          success: false,
+          status: HTTP_STATUS.BAD_GATEWAY,
+          error: "Upstream Responses stream ended without a completed response (status: failed)",
+          response: errorResponse(HTTP_STATUS.BAD_GATEWAY, "Upstream Responses stream ended without a completed response (status: failed)")
+        };
+      }
 
       return {
         success: true,

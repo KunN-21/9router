@@ -1,3 +1,10 @@
+# v0.5.81-local.10
+
+- Stream protocol & terminal semantics: chuẩn hóa in-band error frames, đóng SSE an toàn khi lỗi hoặc kết thúc stream, loại bỏ tình trạng đóng stream im lặng sau HTTP 200.
+- Claude event watchdog: cấu hình timeout 240s cho event stream Claude; giữ nguyên raw socket watchdog 360s.
+- Incomplete response & schema fill: xử lý tool call chưa hoàn tất trong non-stream, bổ sung schema fill cho `claude-to-responses`, tránh thất thoát đối số.
+- OpenCode routing & Go passthrough: hỗ trợ các route Free và Go passthrough transport; ghi rõ Go tool_choice chưa sửa.
+
 # v0.5.81-local.9
 
 - Dashboard: show only native Antigravity summary windows (`Gemini (5h)`, `Gemini Weekly`, `Claude & GPT (5h)`, `Claude & GPT Weekly`); drop per-model mirror rows (`Gemini (Flash / Pro)`, `Claude (Sonnet / Opus)`, `GPT-OSS 120B`).

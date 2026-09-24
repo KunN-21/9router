@@ -1,7 +1,6 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
-import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
 import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
@@ -12,237 +11,19 @@ import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, sav
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
-import { ROLE, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP } from "../../translator/schema/index.js";
+import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 import { storeGeminiThoughtSignature } from "../../services/thoughtSignatureStore.js";
+import {
+  parseToolArguments,
+  extractCustomToolInput,
+  openAICompletionToClaudeMessage,
+  openAICompletionToResponses,
+  responsesOutputToChatParts,
+  responsesStatusToFinish,
+  responsesToOpenAICompletion,
+  responsesToClaudeMessage,
+} from "./nonStreamingFormatters.js";
 
-function parseToolArguments(value) {
-  if (!value) return {};
-  if (typeof value === "object") return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return {};
-  }
-}
-
-function openAICompletionToClaudeMessage(responseBody) {
-  if (!responseBody?.choices?.[0]) return responseBody;
-  const choice = responseBody.choices[0];
-  const message = choice.message || {};
-  const content = [];
-
-  const reasoning = message.reasoning_content || message.provider_specific_fields?.reasoning_content || "";
-  if (reasoning) {
-    content.push({ type: "thinking", thinking: reasoning });
-  }
-  if (typeof message.content === "string" && message.content.length > 0) {
-    content.push({ type: "text", text: message.content });
-  }
-  for (const toolCall of message.tool_calls || []) {
-    const fn = toolCall.function || {};
-    content.push({
-      type: "tool_use",
-      id: toolCall.id || `toolu_${Date.now()}_${content.length}`,
-      name: fn.name || toolCall.name || "",
-      input: parseToolArguments(fn.arguments || toolCall.arguments),
-    });
-  }
-  if (content.length === 0) content.push({ type: "text", text: "" });
-
-  const usage = responseBody.usage || {};
-  return {
-    id: String(responseBody.id || `msg_${Date.now()}`).replace(/^chatcmpl-/, ""),
-    type: "message",
-    role: "assistant",
-    model: responseBody.model || "unknown",
-    content,
-    stop_reason: fromOpenAIFinish(choice.finish_reason, FORMATS.CLAUDE),
-    stop_sequence: null,
-    usage: {
-      input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
-      output_tokens: usage.completion_tokens || usage.output_tokens || 0,
-    },
-  };
-}
-
-/**
- * Convert an OpenAI Chat Completions non-streaming response body into the
- * OpenAI Responses API shape. Used when a Responses-format client (e.g. Codex)
- * is routed to a Chat Completions upstream and `stream:false` — the streaming
- * path already emits Responses events, but the JSON path returned a raw
- * `chat.completion` body, so tool_calls were invisible to Responses clients.
- */
-function extractCustomToolInput(argumentsValue) {
-  const argumentsText = typeof argumentsValue === "string" ? argumentsValue : JSON.stringify(argumentsValue || {});
-  try {
-    const parsed = JSON.parse(argumentsText);
-    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
-  } catch { /* raw freeform input */ }
-  return argumentsText;
-}
-
-function openAICompletionToResponses(responseBody, customToolNames = null) {
-  const choice = responseBody?.choices?.[0];
-  if (!choice) return responseBody;
-
-  const message = choice.message || {};
-  const output = [];
-
-  // Reasoning → a reasoning item (summary text), mirroring the streaming path.
-  const reasoning = message.reasoning_content || message.reasoning;
-  if (typeof reasoning === "string" && reasoning.length > 0) {
-    output.push({
-      type: RESPONSES_ITEM.REASONING,
-      summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: reasoning }],
-    });
-  }
-
-  // Assistant text → a message item with output_text content.
-  const text = typeof message.content === "string" ? message.content : "";
-  if (text.length > 0) {
-    output.push({
-      type: RESPONSES_ITEM.MESSAGE,
-      role: ROLE.ASSISTANT,
-      content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, text, annotations: [] }],
-    });
-  }
-
-  // tool_calls → function_call/custom_tool_call items (Responses-native tool shape).
-  for (const tc of message.tool_calls || []) {
-    const fn = tc.function || {};
-    const custom = customToolNames?.has(fn.name);
-    output.push({
-      type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
-      id: `${custom ? "ctc" : "fc"}_${tc.id || ""}`,
-      call_id: tc.id || "",
-      name: fn.name || "",
-      ...(custom
-        ? { input: extractCustomToolInput(fn.arguments) }
-        : { arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}) }),
-    });
-  }
-
-  const usage = responseBody.usage || {};
-  const status = choice.finish_reason === "tool_calls" ? "completed" : (choice.finish_reason === "stop" ? "completed" : (choice.finish_reason || "completed"));
-
-  return {
-    id: `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_"),
-    object: "response",
-    created_at: responseBody.created || Math.floor(Date.now() / 1000),
-    model: responseBody.model || "unknown",
-    status,
-    background: false,
-    error: null,
-    output,
-    usage: {
-      input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
-      output_tokens: usage.completion_tokens || usage.output_tokens || 0,
-      total_tokens: usage.total_tokens || (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
-    },
-  };
-}
-
-/**
- * Convert an upstream Responses API JSON body ({object:"response", output:[...]})
- * into an OpenAI Chat Completions body. Used when a Chat-format client is routed
- * to a Responses-only upstream with stream:false.
- */
-function responsesOutputToChatParts(output) {
-  let textContent = "", reasoningContent = "";
-  const toolCalls = [];
-  for (const item of output || []) {
-    if (item?.type === RESPONSES_ITEM.REASONING) {
-      for (const s of item.summary || []) {
-        if (typeof s?.text === "string") reasoningContent += s.text;
-      }
-    } else if (item?.type === RESPONSES_ITEM.MESSAGE) {
-      for (const c of item.content || []) {
-        if (typeof c?.text === "string") textContent += c.text;
-      }
-    } else if (item?.type === RESPONSES_ITEM.FUNCTION_CALL || item?.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL) {
-      const args = item?.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL
-        ? JSON.stringify({ input: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? "") })
-        : typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {});
-      toolCalls.push({
-        id: item.call_id || item.id || `call_${item.name}_${toolCalls.length}`,
-        type: "function",
-        function: { name: item.name || "", arguments: args },
-      });
-    }
-  }
-  return { textContent, reasoningContent, toolCalls };
-}
-
-// Map a Responses status to the OpenAI finish_reason / Claude stop_reason pair.
-// incomplete+max_output_tokens → length/max_tokens; otherwise stop/end_turn
-// (tool calls override to tool_calls/tool_use at the caller).
-function responsesStatusToFinish(status, details) {
-  if (status === "incomplete" && details?.reason === "max_output_tokens") {
-    return { finishReason: OPENAI_FINISH.LENGTH, stopReason: CLAUDE_STOP.MAX_TOKENS };
-  }
-  return { finishReason: OPENAI_FINISH.STOP, stopReason: CLAUDE_STOP.END_TURN };
-}
-
-function responsesToOpenAICompletion(responseBody) {
-  if (!Array.isArray(responseBody?.output)) return responseBody;
-  const { textContent, reasoningContent, toolCalls } = responsesOutputToChatParts(responseBody.output);
-
-  const message = { role: ROLE.ASSISTANT };
-  message.content = textContent || (toolCalls.length > 0 ? null : "");
-  if (reasoningContent) message.reasoning_content = reasoningContent;
-  if (toolCalls.length > 0) message.tool_calls = toolCalls;
-
-  const usage = responseBody.usage || {};
-  const mapped = responsesStatusToFinish(responseBody.status, responseBody.incomplete_details);
-  const finishReason = toolCalls.length > 0 ? OPENAI_FINISH.TOOL_CALLS : mapped.finishReason;
-
-  return {
-    id: responseBody.id || `chatcmpl-${Date.now()}`,
-    object: "chat.completion",
-    created: responseBody.created_at || Math.floor(Date.now() / 1000),
-    model: responseBody.model || "unknown",
-    choices: [{ index: 0, message, finish_reason: finishReason }],
-    usage: {
-      prompt_tokens: usage.input_tokens || 0,
-      completion_tokens: usage.output_tokens || 0,
-      total_tokens: usage.total_tokens || (usage.input_tokens || 0) + (usage.output_tokens || 0),
-    },
-  };
-}
-
-/**
- * Convert an upstream Responses API JSON body into a Claude message body.
- * Used when a Claude-format client is routed to a Responses-only upstream with stream:false.
- */
-function responsesToClaudeMessage(responseBody) {
-  if (!Array.isArray(responseBody?.output)) return responseBody;
-  const { textContent, reasoningContent, toolCalls } = responsesOutputToChatParts(responseBody.output);
-
-  const content = [];
-  if (reasoningContent) content.push({ type: "thinking", thinking: reasoningContent });
-  if (textContent || content.length === 0) content.push({ type: "text", text: textContent });
-  for (const tc of toolCalls) {
-    content.push({ type: "tool_use", id: tc.id, name: tc.function.name, input: parseToolArguments(tc.function.arguments) });
-  }
-
-  const usage = responseBody.usage || {};
-  const mapped = responsesStatusToFinish(responseBody.status, responseBody.incomplete_details);
-  const stopReason = toolCalls.length > 0 ? CLAUDE_STOP.TOOL_USE : mapped.stopReason;
-
-  return {
-    id: responseBody.id || `msg_${Date.now()}`,
-    type: "message",
-    role: ROLE.ASSISTANT,
-    model: responseBody.model || "unknown",
-    content,
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: {
-      input_tokens: usage.input_tokens || 0,
-      output_tokens: usage.output_tokens || 0,
-    },
-  };
-}
 
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
@@ -481,6 +262,30 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
   return responseBody;
 }
 
+// Describe why a non-streaming JSON body is empty/misshapen, or null when valid.
+// Narrow by design: only a keyless body or an explicitly empty `choices` array
+// is rejected. Other unknown shapes (e.g. a non-opt-in {success,data} envelope)
+// keep the existing pass-through so pinned behavior never changes. Other targets
+// (Claude/Gemini/Ollama) synthesize empty-content bodies by design and are unchecked.
+function describeEmptyNonStreamingBody(responseBody, targetFormat) {
+  if (!responseBody || typeof responseBody !== "object" || Array.isArray(responseBody)) {
+    return "JSON";
+  }
+  if (Object.keys(responseBody).length === 0) {
+    return targetFormat === FORMATS.OPENAI_RESPONSES ? "Responses API" : "Chat Completions";
+  }
+  if (targetFormat === FORMATS.OPENAI && "choices" in responseBody) {
+    const choices = responseBody.choices;
+    if (!Array.isArray(choices) || choices.length === 0 || !choices[0] || typeof choices[0] !== "object") {
+      return "Chat Completions";
+    }
+  }
+  if (targetFormat === FORMATS.OPENAI_RESPONSES && responseBody.object === "response" && !Array.isArray(responseBody.output)) {
+    return "Responses API";
+  }
+  return null;
+}
+
 /**
  * Handle non-streaming response from provider.
  */
@@ -522,10 +327,61 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     }
   }
 
+  // Reject failed Responses streams before logging or firing success hooks
+  if (responseBody?.status === "failed") {
+    appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+    const msg = responseBody?.error?.message
+      ? `Upstream Responses error from ${provider}/${model}: ${responseBody.error.message}`
+      : `Upstream Responses stream ended without a completed response from ${provider}/${model} (status: failed)`;
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, msg);
+  }
+
+  // Reject error payloads (even if upstream returned HTTP 200)
+  if (responseBody?.error || responseBody?.type === "error") {
+    const status = providerResponse.status >= 400 ? providerResponse.status : HTTP_STATUS.BAD_GATEWAY;
+    appendLog({ status: `FAILED ${status}` });
+    const msg = responseBody?.error?.message || (typeof responseBody?.error === "string" ? responseBody.error : "Upstream returned error payload");
+    console.error(`[ChatCore] Error payload from ${provider}/${model}: ${msg}`);
+    return createErrorResult(status, msg);
+  }
+
   // Unwrap before any consumer reads choices/usage so non-stream clients get a
   // bare OpenAI body and usage tracking sees data.usage. No-op unless the
   // provider opts in via transport.quirks.clineEnvelope.
   responseBody = unwrapClineEnvelope(responseBody, provider);
+
+  // Reject an empty/misshapen JSON body before it becomes HTTP200: an empty
+  // chat.completion (or Responses body) has no content for clients to read.
+  const emptyShape = describeEmptyNonStreamingBody(responseBody, targetFormat);
+  if (emptyShape) {
+    appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+    console.error(`[ChatCore] Empty ${emptyShape} JSON from ${provider}/${model} (upstream status ${providerResponse.status})`);
+    return createErrorResult(
+      HTTP_STATUS.BAD_GATEWAY,
+      `Empty ${emptyShape} JSON response from ${provider}/${model} (upstream status ${providerResponse.status})`
+    );
+  }
+
+  // Pre-translate to validate final Claude message and avoid double translation
+  const translatedResponse = needsTranslation(targetFormat, sourceFormat)
+    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
+    : responseBody;
+
+  // Scope guard for Claude clients: both same-format and translated paths must
+  // produce a valid Claude message. Reject non-message shapes before logging/success hooks.
+  // Note: empty content (content: [] or content: [{type:"text",text:""}]) is valid;
+  // only missing type:"message" or non-array content indicates malformed shape.
+  if (sourceFormat === FORMATS.CLAUDE) {
+    const valid = translatedResponse?.type === "message"
+      && Array.isArray(translatedResponse.content);
+    if (!valid) {
+      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+      const errMsg = responseBody?.error?.message
+        || `Malformed ${targetFormat} response for Claude client from ${provider}/${model} (upstream status ${providerResponse.status})`;
+      console.error(`[ChatCore] ${errMsg}`);
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+    }
+  }
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
   if (onRequestSuccess) {
@@ -543,21 +399,21 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   appendLog({ tokens: usage, status: "200 OK" });
   saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
-
-  const translatedResponse = needsTranslation(targetFormat, sourceFormat)
-    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
-    : responseBody;
   const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
   // Responses-format translation produces a `object:"response"` body with no
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
   const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.object === "response";
 
-  // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other")
+  // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other").
+  // Truncation wins over tool presence: a truncated tool call is not executable,
+  // so length/max_tokens (or raw Responses incomplete status) must survive.
   if (translatedResponse?.choices?.[0]) {
     const choice = translatedResponse.choices[0];
     const msg = choice.message;
     const hasToolCalls = Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0;
-    if (hasToolCalls && choice.finish_reason !== "tool_calls") {
+    const truncated = choice.finish_reason === "length" || choice.finish_reason === "max_tokens"
+      || responseBody?.status === "incomplete";
+    if (hasToolCalls && choice.finish_reason !== "tool_calls" && !truncated) {
       choice.finish_reason = "tool_calls";
     }
   }

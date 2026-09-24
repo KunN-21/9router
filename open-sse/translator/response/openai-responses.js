@@ -18,7 +18,32 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   if (!chunk) {
     return flushEvents(state);
   }
-  
+
+  // Handle OpenAI error payload (e.g. rate limit or server error)
+  if (chunk.error) {
+    if (state.completedSent || state.failedSent) return [];
+    state.failedSent = true;
+    const nextSeq = () => ++state.seq;
+    return [{
+      event: "response.failed",
+      data: {
+        type: "response.failed",
+        sequence_number: nextSeq(),
+        response: {
+          id: state.responseId,
+          object: "response",
+          created_at: state.created,
+          status: "failed",
+          error: {
+            message: chunk.error.message || JSON.stringify(chunk.error),
+            type: chunk.error.type || "server_error",
+            code: chunk.error.code || "upstream_error"
+          }
+        }
+      }
+    }];
+  }
+
   if (!chunk.choices?.length) return [];
   
   const events = [];
@@ -552,45 +577,84 @@ function resolveToolChatIndex(state, data, item = null) {
     );
   }
 
-  // Function call done (standard or custom_tool_call variant).
+  // Function call done (arguments.done or output_item.done variant).
   // Index was assigned at added-time; nothing to advance. Some upstreams send
   // complete arguments only here (no deltas) — emit them once in that case.
-  if (eventType === "response.output_item.done" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
-    const idx = resolveToolChatIndex(state, data, data.item) ?? Math.max(0, (state.toolCallIndex || 1) - 1);
-    const fullArgs = data.item?.arguments;
-    if (typeof fullArgs === "string" && fullArgs) {
-      state.respToolArgsEmitted ??= new Set();
-      if (!state.respToolArgsEmitted.has(idx)) {
-        state.respToolArgsEmitted.add(idx);
-        return buildChunk(
-          { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
-          { tool_calls: [{ index: idx, function: { arguments: fullArgs } }] }
-        );
-      }
+  const isArgsDone = eventType === "response.function_call_arguments.done" || eventType === "response.custom_tool_call_input.done";
+  const isItemDone = eventType === "response.output_item.done" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call");
+
+  if (isArgsDone || isItemDone) {
+    const item = data.item;
+    const idx = resolveToolChatIndex(state, data, item) ?? Math.max(0, (state.toolCallIndex || 1) - 1);
+    state.respToolArgsEmitted ??= new Set();
+    if (!state.respToolArgsEmitted.has(idx)) {
+      state.respToolArgsEmitted.add(idx);
+      const rawArgs = item?.arguments ?? item?.input ?? data.arguments ?? data.input;
+      const emitArgs = typeof rawArgs === "string" && rawArgs.length > 0 ? rawArgs : "{}";
+      return buildChunk(
+        { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
+        { tool_calls: [{ index: idx, function: { arguments: emitArgs } }] }
+      );
     }
     return null;
   }
 
-  // Response completed
-  if (eventType === "response.completed" || eventType === "response.done") {
-    // Extract usage from response.completed event
-    const responseUsage = data.response?.usage;
+  // Response completed / done / incomplete
+  if (eventType === "response.completed" || eventType === "response.done" || eventType === "response.incomplete") {
+    // If status is failed or cancelled, treat as error, not success
+    const status = data.response?.status || data.status;
+    if (status === "failed" || status === "cancelled") {
+      if (state.finishReasonSent) return null;
+      const rawError = data.response?.error || data.error || { message: `Upstream response ${status}`, type: "stream_error" };
+      state.error = rawError;
+      state.finishReasonSent = true;
+      return {
+        error: {
+          message: rawError.message || JSON.stringify(rawError),
+          type: rawError.type || "server_error",
+          code: rawError.code || `response_${status}`
+        }
+      };
+    }
+
+    // Extract usage from response.completed / response.done / response.incomplete event
+    const responseUsage = data.response?.usage || data.usage;
     if (responseUsage && typeof responseUsage === "object") {
       const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;
       const outputTokens = responseUsage.output_tokens || responseUsage.completion_tokens || 0;
+      const totalTokens = responseUsage.total_tokens || (inputTokens + outputTokens);
       // OpenAI Responses API: input_tokens already includes cached_tokens
       // Cache info is in input_tokens_details.cached_tokens
       const cacheReadTokens = responseUsage.input_tokens_details?.cached_tokens || responseUsage.cache_read_input_tokens || 0;
-      
-      state.usage = buildUsage({ promptTokens: inputTokens, completionTokens: outputTokens, totalTokens: inputTokens + outputTokens, cachedTokens: cacheReadTokens });
+      const cacheCreationTokens = responseUsage.input_tokens_details?.cache_creation_tokens || responseUsage.cache_creation_input_tokens || 0;
+      const reasoningTokens = responseUsage.output_tokens_details?.reasoning_tokens || responseUsage.completion_tokens_details?.reasoning_tokens || responseUsage.reasoning_tokens || 0;
+
+      state.usage = buildUsage({
+        promptTokens: inputTokens,
+        completionTokens: outputTokens,
+        totalTokens,
+        cachedTokens: cacheReadTokens,
+        cacheCreationTokens,
+        reasoningTokens,
+      });
     }
-    
+
     if (!state.finishReasonSent) {
-      const finishReason = computeFinishReason(state);
+      const isIncomplete = eventType === "response.incomplete" || status === "incomplete";
+      const statusDetails = data.response?.status_details || data.status_details || data.response?.incomplete_details || data.incomplete_details;
+      const reason = statusDetails?.reason;
+      const isMaxTokens = isIncomplete && (reason === "max_output_tokens" || reason === "max_tokens" || !reason);
+
+      // Truncation wins over tool presence — mirrors streaming translator (T7).
+      const finishReason = isMaxTokens
+        ? OPENAI_FINISH.LENGTH
+        : state.toolCallIndex > 0 || state.currentToolCallId
+        ? OPENAI_FINISH.TOOL_CALLS
+        : computeFinishReason(state);
 
       state.finishReasonSent = true;
       state.finishReason = finishReason; // Mark for usage injection in stream.js
-      
+
       const finalChunk = buildChunk(
         { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
         {},
@@ -601,7 +665,7 @@ function resolveToolChatIndex(state, data, item = null) {
       if (state.usage && typeof state.usage === "object") {
         finalChunk.usage = state.usage;
       }
-      
+
       return finalChunk;
     }
     return null;
@@ -617,12 +681,15 @@ function resolveToolChatIndex(state, data, item = null) {
       state.error = error;
       state.finishReasonSent = true;
 
-      // Surface the error as an OpenAI-compatible error chunk
-      return buildChunk(
-        { id: state.chatId || `chatcmpl-${Date.now()}`, created: state.created || Math.floor(Date.now() / 1000), model: state.model || MODEL_FALLBACK },
-        { content: `[Error] ${error.message || JSON.stringify(error)}` },
-        OPENAI_FINISH.STOP
-      );
+      // Surface the error as a real OpenAI wire error object so stream.js
+      // detects item.error and does NOT format as success text/STOP.
+      return {
+        error: {
+          message: error.message || JSON.stringify(error),
+          type: error.type || "server_error",
+          code: error.code || "upstream_error"
+        }
+      };
     }
     return null;
   }

@@ -36,7 +36,36 @@ function stopTextBlock(state, results) {
 
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
-  if (!chunk || !chunk.choices?.[0]) return null;
+  if (!chunk) {
+    if (state && !state.finishReasonSent && state.messageStartSent) {
+      const results = [];
+      stopThinkingBlock(state, results);
+      stopTextBlock(state, results);
+      state.finishReasonSent = true;
+      state.finishReason = "stop";
+      const finalUsage = state.usage || { input_tokens: 0, output_tokens: 0 };
+      results.push({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: finalUsage
+      });
+      results.push({ type: "message_stop" });
+      return results;
+    }
+    return null;
+  }
+
+  if (chunk.error) {
+    return [{
+      type: "error",
+      error: {
+        type: chunk.error.type || "api_error",
+        message: chunk.error.message || "Upstream error",
+      }
+    }];
+  }
+
+  if (!chunk.choices?.[0]) return null;
 
   const results = [];
   const choice = chunk.choices[0];
