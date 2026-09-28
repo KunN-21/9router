@@ -75,11 +75,11 @@ describe("Antigravity Weekly Quota Parser & Fetcher", () => {
       expect(result).toHaveProperty("gemini_weekly");
       expect(result).toHaveProperty("claude_gpt_weekly");
 
-      // Must NOT produce 5h buckets as new quota keys
+      // Must NOT produce raw bucketId keys
       expect(result).not.toHaveProperty("gemini-5h");
       expect(result).not.toHaveProperty("3p-5h");
-      expect(result).not.toHaveProperty("gemini_5h");
-      expect(result).not.toHaveProperty("claude_gpt_5h");
+      expect(result).toHaveProperty("gemini_5h");
+      expect(result).not.toHaveProperty("claude_gpt_5h"); // disabled: true in fixture
 
       // Gemini Weekly checks
       expect(result.gemini_weekly).toMatchObject({

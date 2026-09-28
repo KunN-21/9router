@@ -410,7 +410,7 @@ describe("weekly quota isolation from existing quota", () => {
     });
   });
 
-  it("reconciles weekly quota to 0% when all paid-tier family models are exhausted", async () => {
+  it("preserves weekly quota independently when all paid-tier 5h models are exhausted", async () => {
     proxyAwareFetch.mockImplementation(async (url) => {
       if (url.includes(":loadCodeAssist")) {
         return {
@@ -458,14 +458,14 @@ describe("weekly quota isolation from existing quota", () => {
     const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
     const result = await getAntigravityUsage("token-reconcile", {});
 
-    // Per-model quota should show exhausted
+    // Per-model quota should show exhausted (0%)
     expect(result.quotas["gemini-3.8-flash-high"].remainingPercentage).toBe(0);
-    // Weekly quota should be reconciled to 0% with the family reset time
+    // Weekly quota should NOT be pulled down to 0% — it keeps its genuine upstream weekly level
     expect(result.quotas.gemini_weekly).toMatchObject({
-      used: 1000,
+      used: 0,
       total: 1000,
-      remainingPercentage: 0,
-      resetAt: "2026-09-13T12:00:00.000Z",
+      remainingPercentage: 100,
+      resetAt: "2026-09-15T00:00:00.000Z",
     });
   });
 });

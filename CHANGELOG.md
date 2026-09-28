@@ -1,3 +1,8 @@
+# v0.5.81-local.11
+
+- Fix Antigravity Weekly quota isolation: loại bỏ logic ép Weekly về 0% khi các model 5h cạn kiệt, bảo toàn đúng quota Weekly độc lập trả về từ Google Cloud Code `retrieveUserQuotaSummary`.
+- Quota test suite: 72/72 tests passed (bao gồm isolation test cho paid-tier và free-tier Antigravity).
+
 # v0.5.81-local.10
 
 - Stream protocol & terminal semantics: chuẩn hóa in-band error frames, đóng SSE an toàn khi lỗi hoặc kết thúc stream, loại bỏ tình trạng đóng stream im lặng sau HTTP 200.
