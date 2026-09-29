@@ -112,6 +112,8 @@ export const MODEL_CAPABILITIES = {
   "glm-5.3-flash":     { vision: true, videoInput: true, pdf: true, reasoning: true, thinkingFormat: "zai", contextWindow: 1000000, maxOutput: 131072 },
   "glm-4.6v":          { vision: true, videoInput: true, reasoning: true, thinkingFormat: "zai", contextWindow: 128000, maxOutput: 32768 },
   "glm-4.5v":          { vision: true, videoInput: true, reasoning: true, thinkingFormat: "zai", contextWindow: 64000, maxOutput: 16384 },
+  // GLM-5.2 has 1M context — pattern *glm-5* only gives 200k, so override here
+  "glm-5.2":           { reasoning: true, thinkingFormat: "zai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
 
   // DeepSeek's first V4 model with image input; text limits match V4-Flash.
   "deepseek-v4-flash-vision-exp": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
@@ -166,6 +168,12 @@ export const PROVIDER_CAPABILITIES = {
     "deepseek-ai/deepseek-v4-pro": { reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 65536 },
     "deepseek-ai/deepseek-v4-flash": { reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 65536 },
   },
+  // glm-5.3-flash on OpenCode Go is served by a backend that rejects the z.ai
+  // `thinking` object (400: unknown field "thinking") and wants reasoning_effort.
+  // Overrides the global entry, whose z.ai shape is correct for z.ai itself.
+  "opencode-go": {
+    "glm-5.3-flash": { vision: true, videoInput: true, pdf: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
+  },
   "codex": {
     "gpt-6-astra":               { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 },
     "gpt-5.6-sol":               CODEX_GPT_56_SOL_CAPS,
@@ -206,6 +214,10 @@ export const PROVIDER_CAPABILITIES = {
     "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 512000, maxOutput: 128000 },
     "kimi-k2.7":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
     "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
+    "hy3-preview":        { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
+    "deepseek-v4-flash":  { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
+    "deepseek-v3-2-volc": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 96000, maxOutput: 32000 },
     // Per-model values mirror the server's product-config payload (the plugin
     // fetches it from copilot.tencent.com; the `models[]` entries carry
     // maxInputTokens/maxOutputTokens/supportsImages). contextWindow =
@@ -352,7 +364,7 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*qwen*vl*",       caps: { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 262144 } },
   { pattern: "*qwen*omni*",     caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 262144, maxOutput: 65536 } },
   { pattern: "*qwen*coder*",    caps: { reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 } },
-  { pattern: "*qwen*max*",      caps: { reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
+  { pattern: "*qwen*max*",      caps: { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*qwen3.5*",       caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*qwen3.6*",       caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*qwen3.7*",       caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
@@ -391,14 +403,15 @@ export const PATTERN_CAPABILITIES = [
 
   // ── MiniMax (M3 = adaptive; M2.x cannot disable) ─────────────────
   { pattern: "*minimax*image*", caps: { imageOutput: true } },
-  { pattern: "*minimax-m3*",    caps: { vision: true, reasoning: true, thinkingFormat: "minimax", contextWindow: 1048576, maxOutput: 512000 } },
-  { pattern: "*minimax-m2.7*",  caps: { reasoning: true, thinkingFormat: "minimax", thinkingCanDisable: false, contextWindow: 204800, maxOutput: 131072 } },
+  { pattern: "*minimax-m3*",    caps: { vision: true, reasoning: true, thinkingFormat: "minimax", contextWindow: 1000000, maxOutput: 131072 } },
+  { pattern: "*minimax-m2.7*",  caps: { vision: true, reasoning: true, thinkingFormat: "minimax", thinkingCanDisable: false, contextWindow: 204800, maxOutput: 131072 } },
+  { pattern: "*minimax-m2.5*",  caps: { vision: true, reasoning: true, thinkingFormat: "minimax", thinkingCanDisable: false, contextWindow: 204800, maxOutput: 131072 } },
   { pattern: "*minimax*",       caps: { reasoning: true, thinkingFormat: "minimax", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 131072 } },
 
-  // ── Xiaomi MiMo (vision, 1M / 262K ctx) ──────────────────────────
-  { pattern: "*mimo*v2.5*",     caps: { vision: true, audioInput: true, videoInput: true, contextWindow: 1048576, maxOutput: 131072 } },
-  { pattern: "*mimo*omni*",     caps: { vision: true, audioInput: true, contextWindow: 262144, maxOutput: 131072 } },
-  { pattern: "*mimo*",          caps: { vision: true, contextWindow: 262144, maxOutput: 131072 } },
+  // ── Xiaomi MiMo (vision + <think>-tag reasoning, always-on, can't disable) ──
+  { pattern: "*mimo*v2.5*",     caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 } },
+  { pattern: "*mimo*omni*",     caps: { vision: true, audioInput: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 131072 } },
+  { pattern: "*mimo*",          caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 131072 } },
 
   // ── Llama (4 = vision/1M; 3.x = text-only/128K) ──────────────────
   { pattern: "*llama-4*",       caps: { vision: true, contextWindow: 1000000 } },
@@ -437,6 +450,60 @@ export const PATTERN_CAPABILITIES = [
 ];
 
 /**
+ * Aggregate capabilities for a combo from its constituent model IDs.
+ * Each entry in comboModels is a fully-qualified "provider/model" string.
+ *
+ * Union:        vision, pdf, audioInput, videoInput, imageOutput, audioOutput, search
+ * Intersection: tools
+ * Primary:      reasoning fields from the first (primary) model
+ * Conservative: contextWindow = min; maxOutput = max
+ *
+ * @param {string[]} comboModels
+ * @param {Object|null} [comboLookup] optional map of combo name → models array for nested resolution
+ * @param {Function|null} [resolveCaps] optional (fullId) → caps override. The synced model
+ *   catalog is server-only (it reads a file), so a browser-side resolution cannot see the
+ *   limits it supplies and silently falls back to the generic patterns below. Callers that
+ *   have the server's answer (/api/models, via useModelCaps) pass it here; it is merged over
+ *   the local tables, so fields it does not carry (tools, pdf, audio/video, thinking*) survive.
+ * @param {number} [_depth] internal recursion depth guard
+ * @returns {object|null} full capabilities object, or null for empty input
+ */
+export function aggregateComboCapabilities(comboModels, comboLookup = null, resolveCaps = null, _depth = 0) {
+  if (!comboModels?.length || _depth > 6) return null;
+  const allCaps = comboModels.map((fullId) => {
+    // Nested combo: bare name (no slash) that exists in the lookup — recurse
+    if (!fullId.includes("/") && comboLookup?.[fullId]) {
+      return aggregateComboCapabilities(comboLookup[fullId], comboLookup, resolveCaps, _depth + 1)
+          ?? resolveCaps?.(fullId)
+          ?? getCapabilitiesForModel(null, fullId);
+    }
+    const slash = fullId.indexOf("/");
+    const provider = slash === -1 ? null : fullId.slice(0, slash);
+    const model = slash === -1 ? fullId : fullId.slice(slash + 1);
+    const local = getCapabilitiesForModel(provider, model);
+    const override = resolveCaps?.(fullId);
+    return override ? { ...local, ...override } : local;
+  });
+  const first = allCaps[0];
+  return {
+    vision:      allCaps.some((c) => c.vision),
+    pdf:         allCaps.some((c) => c.pdf),
+    audioInput:  allCaps.some((c) => c.audioInput),
+    videoInput:  allCaps.some((c) => c.videoInput),
+    imageOutput: allCaps.some((c) => c.imageOutput),
+    audioOutput: allCaps.some((c) => c.audioOutput),
+    search:      allCaps.some((c) => c.search),
+    tools:       allCaps.every((c) => c.tools),
+    reasoning:          first.reasoning,
+    thinkingFormat:     first.thinkingFormat,
+    thinkingCanDisable: first.thinkingCanDisable,
+    thinkingRange:      first.thinkingRange,
+    contextWindow: Math.min(...allCaps.map((c) => c.contextWindow)),
+    maxOutput:     Math.max(...allCaps.map((c) => c.maxOutput)),
+  };
+}
+
+/**
  * Resolve capabilities for a model using the 4-step fallback chain,
  * merged over DEFAULT_CAPABILITIES so the result is always complete.
  *
@@ -452,7 +519,8 @@ const MODALITY_KEYS = ["vision", "pdf", "audioInput", "videoInput"];
 // The server bundles this module into every route chunk that needs it, and each
 // copy carries its own module state, so an install landing in the copy the
 // startup hook imported stays invisible to the copy resolving requests. The slot
-// lives on globalThis instead; the local binding is the fast path.
+// lives on globalThis instead, and every read goes through it: caching it locally
+// would keep a reader alive in other copies after setCatalogSource(null).
 let catalogSource = null;
 
 /**
@@ -466,9 +534,8 @@ export function setCatalogSource(source) {
 }
 
 function getCatalogSource() {
-  if (catalogSource) return catalogSource;
-  if (typeof globalThis === "undefined") return null;
-  return (catalogSource = globalThis.__9rCatalogSource || null);
+  if (typeof globalThis === "undefined") return catalogSource;
+  return globalThis.__9rCatalogSource || null;
 }
 
 // Apply the synced catalog + name heuristic on top of a table-resolved result.
