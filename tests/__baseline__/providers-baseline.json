@@ -762,6 +762,44 @@
       }
     ]
   },
+  "opencode-zen": {
+    "baseUrl": "https://opencode.ai/zen/v1/chat/completions",
+    "headers": {},
+    "usage": {
+      "url": "https://opencode.ai/zen/v1/usage"
+    },
+    "format": "openai",
+    "transports": [
+      {
+        "format": "openai",
+        "baseUrl": "https://opencode.ai/zen/v1/chat/completions",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      },
+      {
+        "format": "claude",
+        "baseUrl": "https://opencode.ai/zen/v1/messages",
+        "auth": {
+          "combined": true,
+          "header": "x-api-key",
+          "scheme": "raw",
+          "anthropicVersion": true
+        }
+      },
+      {
+        "format": "openai-responses",
+        "baseUrl": "https://opencode.ai/zen/v1/responses",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      }
+    ]
+  },
   "opencode": {
     "baseUrl": "https://opencode.ai",
     "headers": {
@@ -1035,6 +1073,34 @@
     "headers": {},
     "quirks": {
       "preserveCacheControl": true
+    },
+    "format": "openai"
+  },
+  "dahl": {
+    "baseUrl": "https://inference.dahl.global/v1/chat/completions",
+    "validateUrl": "https://inference.dahl.global/v1/models",
+    "format": "openai"
+  },
+  "atria": {
+    "baseUrl": "https://api.atria-asi.ai/v1/chat/completions",
+    "validateUrl": "https://api.atria-asi.ai/v1/models",
+    "format": "openai"
+  },
+  "agnes": {
+    "baseUrl": "https://apihub.agnes-ai.com/v1/chat/completions",
+    "validateUrl": "https://apihub.agnes-ai.com/v1/models",
+    "format": "openai"
+  },
+  "bai": {
+    "baseUrl": "https://api.b.ai/v1/chat/completions",
+    "validateUrl": "https://api.b.ai/v1/models",
+    "format": "openai"
+  },
+  "tokenharbor": {
+    "baseUrl": "https://tokenharbor.ai/v1/chat/completions",
+    "validateUrl": "https://tokenharbor.ai/v1/models",
+    "retry": {
+      "429": 2
     },
     "format": "openai"
   }

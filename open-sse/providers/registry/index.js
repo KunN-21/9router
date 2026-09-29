@@ -69,6 +69,7 @@ import p66 from "./ollama.js";
 import p123 from "./ollama-search.js";
 import p67 from "./openai.js";
 import p68 from "./opencode-go.js";
+import p68z from "./opencode-zen.js";
 import p69 from "./opencode.js";
 import p70 from "./openrouter.js";
 import p71 from "./perplexity-web.js";
@@ -123,6 +124,11 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
+import p125 from "./tokenharbor.js";
+import p126 from "./dahl.js";
+import p127 from "./atria.js";
+import p129 from "./agnes.js";
+import p130 from "./bai.js";
 export default [
   p0,
   p1,
@@ -194,6 +200,7 @@ export default [
   p123,
   p67,
   p68,
+  p68z,
   p69,
   p70,
   p71,
@@ -246,4 +253,9 @@ export default [
   p120,
   p121,
   p122,
+  p125,
+  p126,
+  p127,
+  p129,
+  p130,
 ];
