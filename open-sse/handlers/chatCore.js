@@ -6,6 +6,7 @@ import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/for
 import { createStreamController } from "../utils/streamHandler.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
+import { upstreamResponseHeaders } from "../utils/upstreamHeaders.js";
 import { getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError, clientStatusForUpstream } from "../utils/error.js";
@@ -511,7 +512,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // Client sees the normalised class (4xx stop / 5xx retry, unknown model as
     // 404 rather than the provider's 401); internal classification keeps the
     // real upstream status.
-    return createErrorResult(statusCode, errMsg, resetsAtMs, clientStatusForUpstream(statusCode, message));
+    return createErrorResult(statusCode, errMsg, resetsAtMs, clientStatusForUpstream(statusCode, message), upstreamResponseHeaders(providerResponse.headers));
   }
 
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
