@@ -148,4 +148,71 @@ describe("response.completed output (issue #4307)", () => {
     expect(second).toEqual([]);
     expect(state.completedOutputItems.size).toBe(1);
   });
+  it("preserves both reasoning and message when both are on choice.index 0", () => {
+    const { events } = runChunks([
+      reasoningChunk("thinking", 0),
+      textChunk("answer", 0),
+      finishChunk({ prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 }),
+    ]);
+    const response = completedResponse(events);
+    expect(response.output.map((item) => item.type)).toEqual(["reasoning", "message"]);
+    expect(response.output[0].summary[0]).toMatchObject({ text: "thinking" });
+    expect(response.output[1].content[0]).toMatchObject({ text: "answer" });
+  });
+
+  it("preserves message and tool call when both are on choice.index 0", () => {
+    const { events } = runChunks([
+      textChunk("calling tool", 0),
+      {
+        id: "chatcmpl-1",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_1", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } },
+              ],
+            },
+          },
+        ],
+      },
+      { id: "chatcmpl-1", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 } },
+    ]);
+    const response = completedResponse(events);
+    expect(response.output.map((item) => item.type)).toEqual(["message", "function_call"]);
+    expect(response.output[0].content[0]).toMatchObject({ text: "calling tool" });
+    expect(response.output[1]).toMatchObject({ type: "function_call", name: "get_weather" });
+  });
+
+  it("assigns sequential output_index across reasoning, message, and multiple tool calls", () => {
+    const { events } = runChunks([
+      reasoningChunk("thinking", 0),
+      textChunk("explanation", 0),
+      {
+        id: "chatcmpl-1",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_1", function: { name: "toolA", arguments: "{}" } },
+                { index: 1, id: "call_2", function: { name: "toolB", arguments: "{}" } },
+              ],
+            },
+          },
+        ],
+      },
+      { id: "chatcmpl-1", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 } },
+    ]);
+    const added = events.filter((e) => e.event === "response.output_item.added");
+    expect(added.map((e) => e.data.output_index)).toEqual([0, 1, 2, 3]);
+
+    const response = completedResponse(events);
+    expect(response.output.map((item) => item.type)).toEqual([
+      "reasoning",
+      "message",
+      "function_call",
+      "function_call",
+    ]);
+  });
 });

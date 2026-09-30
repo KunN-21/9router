@@ -288,6 +288,9 @@ export function initState(sourceFormat) {
     return {
       ...base,
       seq: 0,
+      nextOutputIndex: 0,
+      msgOutputIndices: {},
+      toolOutputIndices: {},
       responseId: `resp_${Date.now()}`,
       created: Math.floor(Date.now() / 1000),
       started: false,

@@ -512,8 +512,8 @@ describe("handleImageGenerationCore", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png");
-    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png");
+    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png", { redirect: "manual" });
+    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png", { redirect: "manual" });
 
     const providerCall = global.fetch.mock.calls[2];
     expect(providerCall[0]).toBe("https://api.cloudflare.com/client/v4/accounts/cf-account/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting");
