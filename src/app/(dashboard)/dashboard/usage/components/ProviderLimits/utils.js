@@ -455,6 +455,7 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "qoder-cn":
       case "qoder":
         // Qoder ships a `user` quota and (optionally) an `organization`
         // quota, both with same shape: {total, used, remaining, unit, resetAt}.

@@ -129,6 +129,7 @@ import p126 from "./dahl.js";
 import p127 from "./atria.js";
 import p129 from "./agnes.js";
 import p130 from "./bai.js";
+import p131 from "./qoder-cn.js";
 export default [
   p0,
   p1,
@@ -258,4 +259,5 @@ export default [
   p127,
   p129,
   p130,
+  p131,
 ];
