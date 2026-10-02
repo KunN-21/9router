@@ -24,7 +24,7 @@ function killMitmByPidFile() {
     if (process.platform === "win32") {
       // taskkill first (works if same user); fallback to PowerShell Stop-Process which can kill admin process if our token allows
       try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch {
-        try { execSync(`powershell -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${pid} -Force"`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { /* best effort */ }
+        try { execSync(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${pid} -Force"`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { /* best effort */ }
       }
     } else {
       try {
@@ -44,7 +44,7 @@ function collectAppPids() {
 
   if (platform === "win32") {
     try {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
+      const psCmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
       const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
       const lines = output.split("\n").slice(1).filter(l => l.trim());
       lines.forEach(line => {
@@ -65,7 +65,7 @@ function collectAppPids() {
     // Kill cloudflared + tray binaries (hold app dir lock)
     for (const procName of ["cloudflared", "tray_windows_release"]) {
       try {
-        const cmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-Process ${procName} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
+        const cmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-Process ${procName} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
         const out = execSync(cmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
         out.split("\n").forEach(l => {
           const pid = l.trim();

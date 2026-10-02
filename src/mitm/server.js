@@ -347,7 +347,7 @@ function killPort(port) {
   try {
     let pidList = [];
     if (IS_WIN) {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command ` +
+      const psCmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command ` +
         `"Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"`;
       const out = execSync(psCmd, { encoding: "utf-8", windowsHide: true }).trim();
       if (!out) return;

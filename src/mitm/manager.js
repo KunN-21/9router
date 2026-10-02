@@ -100,7 +100,7 @@ const ENCRYPT_SALT = "9router-mitm-pwd";
 function getProcessUsingPort443() {
   try {
     if (IS_WIN) {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command ` +
+      const psCmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command ` +
         `"$c = Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $c.OwningProcess } else { 0 }"`;
       const pidStr = execSync(psCmd, { encoding: "utf8", windowsHide: true }).trim();
       const pid = parseInt(pidStr, 10);
@@ -286,7 +286,7 @@ function checkPort443Free() {
 function getPort443Owner(sudoPassword) {
   return new Promise((resolve) => {
     if (IS_WIN) {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "` +
+      const psCmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "` +
         `$c = Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; ` +
         `if ($c) { $c.OwningProcess } else { 0 }"`;    
       exec(psCmd, { windowsHide: true }, (err, stdout) => {
@@ -453,7 +453,7 @@ async function killPort443Owner(owner, sudoPassword) {
   if (!owner || !owner.pid) return;
   if (IS_WIN) {
     try {
-      execSync(`powershell -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${owner.pid} -Force -ErrorAction SilentlyContinue"`, { windowsHide: true });
+      execSync(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${owner.pid} -Force -ErrorAction SilentlyContinue"`, { windowsHide: true });
     } catch { /* best effort */ }
   } else {
     try {
