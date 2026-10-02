@@ -543,6 +543,90 @@ function computeFinishReason(state) {
     : OPENAI_FINISH.STOP;
 }
 
+// Helper to record alias between output_index and item id
+function recordTextItemKey(state, data, item) {
+  state.respItemKeyMap ??= new Map();
+  const id = item?.id || data?.item_id;
+  const outIdx = data?.output_index !== undefined ? data.output_index : item?.output_index;
+  if (id && outIdx !== undefined) {
+    state.respItemKeyMap.set(`idx_${outIdx}`, String(id));
+    state.respItemKeyMap.set(String(id), `idx_${outIdx}`);
+  }
+}
+
+function resolveTextItemKey(state, data, item = null) {
+  state.respItemKeyMap ??= new Map();
+  const id = item?.id || data?.item_id;
+  if (id) {
+    recordTextItemKey(state, data, item);
+    return String(id);
+  }
+  const outIdx = data?.output_index !== undefined ? data.output_index : item?.output_index;
+  if (outIdx !== undefined) {
+    const idxKey = `idx_${outIdx}`;
+    if (state.respItemKeyMap.has(idxKey)) {
+      return state.respItemKeyMap.get(idxKey);
+    }
+    return idxKey;
+  }
+  if (state.currentOutputItemId) return state.currentOutputItemId;
+  return "default";
+}
+
+// Helper to emit un-emitted text from done or completed events without duplication
+function emitRemainingText(state, key, partIndex, text) {
+  if (typeof text !== "string" || text.length === 0) return null;
+  state.respTextEmitted ??= new Map();
+  const partIdx = partIndex ?? 0;
+  const partKey = `${key}:${partIdx}`;
+
+  let already = state.respTextEmitted.get(partKey);
+  if (!already && state.respItemKeyMap?.has(String(key))) {
+    const aliasKey = state.respItemKeyMap.get(String(key));
+    already = state.respTextEmitted.get(`${aliasKey}:${partIdx}`);
+  }
+  if (!already && partIdx === 0) {
+    already = state.respTextEmitted.get(String(key));
+    if (!already && state.respItemKeyMap?.has(String(key))) {
+      const aliasKey = state.respItemKeyMap.get(String(key));
+      already = state.respTextEmitted.get(String(aliasKey));
+    }
+  }
+  already ||= "";
+
+  let remaining = "";
+  if (!already) {
+    remaining = text;
+  } else if (text.startsWith(already)) {
+    remaining = text.slice(already.length);
+  } else if (already.includes(text)) {
+    remaining = "";
+  } else {
+    remaining = "";
+  }
+
+  if (remaining.length > 0) {
+    const fullText = already + remaining;
+    state.respTextEmitted.set(partKey, fullText);
+    if (state.respItemKeyMap?.has(String(key))) {
+      const aliasKey = state.respItemKeyMap.get(String(key));
+      state.respTextEmitted.set(`${aliasKey}:${partIdx}`, fullText);
+    }
+    if (partIdx === 0) {
+      state.respTextEmitted.set(String(key), fullText);
+      if (state.respItemKeyMap?.has(String(key))) {
+        const aliasKey = state.respItemKeyMap.get(String(key));
+        state.respTextEmitted.set(String(aliasKey), fullText);
+      }
+    }
+    return buildChunk(
+      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
+      { content: remaining }
+    );
+  }
+  return null;
+}
+
 /**
  * Translate OpenAI Responses API chunk to OpenAI Chat Completions format
  * This is for when Codex returns data and we need to send it to an OpenAI-compatible client
@@ -588,6 +672,9 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     state.respToolChatIndex ??= new Map();
     // Indices that already received argument deltas (guards done-with-args).
     state.respToolArgsEmitted ??= new Set();
+    state.respTextEmitted ??= new Map();
+    state.respItemKeyMap ??= new Map();
+    state.currentOutputItemId = null;
   }
 
   // Text content delta
@@ -595,15 +682,35 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     const delta = data.delta || "";
     if (!delta) return null;
 
+    state.respTextEmitted ??= new Map();
+    const key = resolveTextItemKey(state, data);
+    const partIdx = data.content_index ?? 0;
+    const partKey = `${key}:${partIdx}`;
+    const prev = state.respTextEmitted.get(partKey) || "";
+    const updated = prev + delta;
+    state.respTextEmitted.set(partKey, updated);
+    if (state.respItemKeyMap?.has(String(key))) {
+      const aliasKey = state.respItemKeyMap.get(String(key));
+      state.respTextEmitted.set(`${aliasKey}:${partIdx}`, updated);
+    }
+    if (partIdx === 0) {
+      state.respTextEmitted.set(String(key), updated);
+      if (state.respItemKeyMap?.has(String(key))) {
+        const aliasKey = state.respItemKeyMap.get(String(key));
+        state.respTextEmitted.set(String(aliasKey), updated);
+      }
+    }
+
     return buildChunk(
       { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
       { content: delta }
     );
   }
 
-  // Text content done (ignore, we handle via delta)
+  // Text content done: recover text if no delta or partial delta
   if (eventType === "response.output_text.done") {
-    return null;
+    const key = resolveTextItemKey(state, data);
+    return emitRemainingText(state, key, data.content_index, data.text);
   }
 
   function recordToolChatIndex(state, data, item, idx) {
@@ -643,6 +750,11 @@ function resolveToolChatIndex(state, data, item = null) {
   }
   return undefined;
 }
+
+  if (eventType === "response.output_item.added") {
+    if (data.item?.id) state.currentOutputItemId = data.item.id;
+    recordTextItemKey(state, data, data.item);
+  }
 
 // Function call started (standard function_call or custom_tool_call).
   // Index is assigned here (not on done): attributing deltas by stream position
@@ -709,6 +821,27 @@ function resolveToolChatIndex(state, data, item = null) {
     return null;
   }
 
+  // Message output item done: recover text if no deltas were emitted or partial delta
+  if (eventType === "response.output_item.done" && data.item?.type === "message") {
+    const item = data.item;
+    const key = resolveTextItemKey(state, data, item);
+    const chunks = [];
+    if (Array.isArray(item.content)) {
+      item.content.forEach((part, idx) => {
+        if (part?.type === "output_text" && part.text) {
+          const chunk = emitRemainingText(state, key, idx, part.text);
+          if (chunk) chunks.push(chunk);
+        }
+      });
+    } else if (typeof item.text === "string" && item.text) {
+      const chunk = emitRemainingText(state, key, 0, item.text);
+      if (chunk) chunks.push(chunk);
+    }
+    if (chunks.length === 1) return chunks[0];
+    if (chunks.length > 1) return chunks;
+    return null;
+  }
+
   // Response completed / done / incomplete
   if (eventType === "response.completed" || eventType === "response.done" || eventType === "response.incomplete") {
     // If status is failed or cancelled, treat as error, not success
@@ -750,6 +883,28 @@ function resolveToolChatIndex(state, data, item = null) {
     }
 
     if (!state.finishReasonSent) {
+      // Check if there is any un-emitted text in completed output items
+      const output = data.response?.output || data.output;
+      const pendingChunks = [];
+      if (Array.isArray(output)) {
+        output.forEach((item, itemIdx) => {
+          if (item?.type === "message") {
+            const key = resolveTextItemKey(state, { output_index: itemIdx }, item);
+            if (Array.isArray(item.content)) {
+              item.content.forEach((part, partIdx) => {
+                if (part?.type === "output_text" && part.text) {
+                  const chunk = emitRemainingText(state, key, partIdx, part.text);
+                  if (chunk) pendingChunks.push(chunk);
+                }
+              });
+            } else if (typeof item.text === "string" && item.text) {
+              const chunk = emitRemainingText(state, key, 0, item.text);
+              if (chunk) pendingChunks.push(chunk);
+            }
+          }
+        });
+      }
+
       const isIncomplete = eventType === "response.incomplete" || status === "incomplete";
       const statusDetails = data.response?.status_details || data.status_details || data.response?.incomplete_details || data.incomplete_details;
       const reason = statusDetails?.reason;
@@ -776,6 +931,9 @@ function resolveToolChatIndex(state, data, item = null) {
         finalChunk.usage = state.usage;
       }
 
+      if (pendingChunks.length > 0) {
+        return [...pendingChunks, finalChunk];
+      }
       return finalChunk;
     }
     return null;

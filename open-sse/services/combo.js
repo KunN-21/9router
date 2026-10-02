@@ -38,6 +38,106 @@ function peekTimeoutMs() {
   return Math.min(...candidates);
 }
 
+// Map error code or type to a standard HTTP status code
+function statusFromErrorCodeOrType(code, type, message = "") {
+  const num = Number(code);
+  if (Number.isFinite(num) && num >= 400 && num <= 599) return num;
+
+  const codeStr = String(code || "").toLowerCase();
+  const typeStr = String(type || "").toLowerCase();
+  const msgStr = String(message || "").toLowerCase();
+
+  if (codeStr.includes("rate_limit") || codeStr.includes("quota") ||
+      typeStr.includes("rate_limit") || msgStr.includes("rate limit") || msgStr.includes("quota")) {
+    return 429;
+  }
+  if (codeStr.includes("invalid_request") || typeStr.includes("invalid_request") ||
+      codeStr.includes("invalid_param") || codeStr.includes("context_length")) {
+    return 400;
+  }
+  if (codeStr.includes("auth") || typeStr.includes("auth") || codeStr.includes("api_key")) {
+    return 401;
+  }
+  if (codeStr.includes("permission") || typeStr.includes("permission") || codeStr.includes("forbidden")) {
+    return 403;
+  }
+  if (codeStr.includes("not_found") || typeStr.includes("not_found")) {
+    return 404;
+  }
+  if (codeStr.includes("overloaded") || codeStr.includes("capacity") || msgStr.includes("capacity") || msgStr.includes("overloaded")) {
+    return 503;
+  }
+  return 500;
+}
+
+// Extract error details from a parsed SSE frame or event
+function extractFrameError(parsed, lastEvent = null) {
+  if (!parsed || typeof parsed !== "object") return null;
+
+  // 1. Explicit error property
+  if (parsed.error) {
+    const err = parsed.error;
+    if (typeof err === "object") {
+      const message = err.message || JSON.stringify(err);
+      const type = err.type || (typeof err.status === "string" ? err.status : "server_error");
+      const code = err.code ?? (typeof err.status === "number" ? err.status : undefined);
+      const status = typeof err.status === "number" ? err.status
+        : (typeof err.code === "number" ? err.code
+        : statusFromErrorCodeOrType(code, type, message));
+      return { message, type, code, status };
+    }
+    if (typeof err === "string" && err.length > 0) {
+      return { message: err, type: "server_error", code: "upstream_error", status: 500 };
+    }
+  }
+
+  // 2. Claude error event: { type: "error", error: { ... } }
+  if (parsed.type === "error" && parsed.error) {
+    const err = parsed.error;
+    const message = err.message || JSON.stringify(err);
+    const type = err.type || "server_error";
+    const status = statusFromErrorCodeOrType(err.code, type, message);
+    return { message, type, code: err.code, status };
+  }
+
+  // 3. OpenAI Responses API failure: response.failed or failed status
+  const isFailedEvent = lastEvent === "response.failed" || parsed.type === "response.failed" || parsed.event === "response.failed";
+  const isFailedStatus = parsed.response?.status === "failed" || parsed.status === "failed";
+  if (isFailedEvent || isFailedStatus) {
+    const err = parsed.response?.error || parsed.error || { message: "Upstream response failed", type: "server_error" };
+    const message = err.message || JSON.stringify(err);
+    const type = err.type || "server_error";
+    const code = err.code || "response_failed";
+    const status = typeof err.status === "number" ? err.status
+      : (typeof code === "number" ? code
+      : statusFromErrorCodeOrType(code, type, message));
+    return { message, type, code, status };
+  }
+
+  // 4. event: error with generic payload
+  if (lastEvent === "error") {
+    const message = parsed.message || (typeof parsed === "string" ? parsed : JSON.stringify(parsed));
+    return { message, type: parsed.type || "server_error", code: parsed.code, status: 500 };
+  }
+
+  return null;
+}
+
+function extractFrameErrorFromLine(line, lastEvent = null) {
+  if (!line || !line.startsWith("data:")) return null;
+  const payload = line.slice(5).trim();
+  if (!payload || payload === "[DONE]") return null;
+  try {
+    const parsed = JSON.parse(payload);
+    return extractFrameError(parsed, lastEvent);
+  } catch {
+    if (lastEvent === "error" || lastEvent === "response.failed") {
+      return { message: payload || `Upstream stream ${lastEvent}`, type: "server_error", code: lastEvent, status: 500 };
+    }
+    return null;
+  }
+}
+
 // Does an SSE data frame carry output the client can actually render or act on?
 //
 // Deliberately stricter than "is this frame well-formed": role announcements,
@@ -55,6 +155,9 @@ function frameCarriesContent(line) {
   } catch {
     return false;
   }
+
+  // An error frame is never success content.
+  if (extractFrameError(parsed)) return false;
 
   // A usage frame counts only if it reports generated output. A frame carrying
   // prompt tokens and completion_tokens: 0 is an accounting record, not an answer.
@@ -75,8 +178,34 @@ function frameCarriesContent(line) {
   }
   if (parsed.type === "content_block_start" && parsed.content_block?.type === "tool_use") return true;
 
-  // OpenAI Responses API: output_text/function-call argument deltas.
+  // OpenAI Responses API: output_text/function-call argument deltas, done text, item done, or completed output.
   if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
+  if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.output_item.done") {
+    if (parsed.item?.type === "message") {
+      const parts = parsed.item.content;
+      if (Array.isArray(parts) && parts.some((p) => nonEmptyString(p?.text))) return true;
+      if (nonEmptyString(parsed.item.text)) return true;
+    }
+    if (parsed.item?.type === "function_call" || parsed.item?.type === "custom_tool_call") {
+      if (parsed.item.name || parsed.item.call_id || parsed.item.arguments) return true;
+    }
+  }
+  if (parsed.type === "response.completed" || parsed.type === "response.done") {
+    const output = parsed.response?.output || parsed.output;
+    if (Array.isArray(output) && output.some((item) => {
+      if (item?.type === "message") {
+        const parts = item.content;
+        return (Array.isArray(parts) && parts.some((p) => nonEmptyString(p?.text))) || nonEmptyString(item.text);
+      }
+      if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+        return item.name || item.call_id || item.arguments;
+      }
+      return false;
+    })) {
+      return true;
+    }
+  }
 
   // Gemini: a candidate with a part that actually holds something.
   const parts = parsed.candidates?.[0]?.content?.parts;
@@ -138,6 +267,8 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
   const rawChunks = [];
   let rawBytes = 0;
   let pending = "";
+  let currentEvent = null;
+  let streamError = null;
   let hasContent = false;
   let upstreamDone = false;
   let timedOut = false;
@@ -187,7 +318,15 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
             upstreamDone = true;
             // A frame may sit in the tail without a trailing newline.
             pending += decoder.decode();
-            if (pending.trim() && frameCarriesContent(pending.trim())) hasContent = true;
+            const tail = pending.trim();
+            if (tail) {
+              const frameError = extractFrameErrorFromLine(tail, currentEvent);
+              if (frameError) {
+                streamError = frameError;
+              } else if (frameCarriesContent(tail)) {
+                hasContent = true;
+              }
+            }
             settled = true;
             return "done";
           }
@@ -202,8 +341,19 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
           while ((newline = pending.indexOf("\n")) !== -1) {
             const line = pending.slice(0, newline).trim();
             pending = pending.slice(newline + 1);
+            if (line.startsWith("event:")) {
+              currentEvent = line.slice(6).trim();
+            } else if (!line) {
+              currentEvent = null;
+            }
+            const frameError = extractFrameErrorFromLine(line, currentEvent);
+            if (frameError) {
+              streamError = frameError;
+              break;
+            }
             if (frameCarriesContent(line)) { hasContent = true; break; }
           }
+          if (streamError) { settled = true; return "error_frame"; }
           if (hasContent) { settled = true; return "content"; }
 
           // A provider can stream non-content frames at line rate. Without a byte
@@ -244,9 +394,14 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
     cleanupAbort?.();
   }
 
+  if (streamError) {
+    await reader.cancel().catch(() => {});
+    return { hasContent: false, body: null, timedOut: false, error: streamError };
+  }
+
   if (!hasContent) {
     await reader.cancel().catch(() => {});
-    return { hasContent: false, body: null, timedOut };
+    return { hasContent: false, body: null, timedOut, error: null };
   }
 
   const body = new ReadableStream({
@@ -552,6 +707,8 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   }
   
   let lastError = null;
+  let lastErrorType = null;
+  let lastErrorCode = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
 
@@ -577,7 +734,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // open an SSE stream, send nothing but keepalives and close cleanly; that
       // must fall through to the next model rather than be handed to the client.
       if (result.ok) {
-        const { hasContent, body: replayBody, aborted } = await peekStreamForContent(result, { signal });
+        const { hasContent, body: replayBody, aborted, error: streamError } = await peekStreamForContent(result, { signal });
         if (aborted || signal?.aborted) {
           await replayBody?.cancel?.(signal?.reason).catch(() => {});
           lastError = signal?.reason?.message || "Request aborted";
@@ -594,6 +751,34 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
           });
         }
 
+        if (streamError) {
+          const errStatus = streamError.status || 500;
+          const errMsg = streamError.message || "Upstream stream error";
+          const { shouldFallback, cooldownMs } = checkFallbackError(errStatus, errMsg);
+
+          lastError = errMsg;
+          lastErrorType = streamError.type || null;
+          lastErrorCode = streamError.code || null;
+          lastStatus = errStatus;
+
+          if (!shouldFallback) {
+            log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: errStatus, error: errMsg });
+            return new Response(
+              JSON.stringify({ error: { message: errMsg, ...(streamError.type ? { type: streamError.type } : {}), ...(streamError.code ? { code: streamError.code } : {}) } }),
+              { status: errStatus, headers: { "Content-Type": "application/json" } }
+            );
+          }
+
+          if (cooldownMs && cooldownMs > 0 && cooldownMs <= 5000 &&
+              (errStatus === 503 || errStatus === 502 || errStatus === 504)) {
+            log.info("COMBO", `Model ${modelStr} transient ${errStatus}, waiting ${cooldownMs}ms before next`);
+            await new Promise(r => setTimeout(r, cooldownMs));
+          }
+
+          log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: errStatus, error: errMsg });
+          continue;
+        }
+
         lastError = "provider returned an empty stream";
         if (!lastStatus) lastStatus = 503;
         log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`);
@@ -607,6 +792,8 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         const errorBody = await result.clone().json();
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
         retryAfter = errorBody?.retryAfter || null;
+        if (errorBody?.error?.type) lastErrorType = errorBody.error.type;
+        if (errorBody?.error?.code) lastErrorCode = errorBody.error.code;
       } catch {
         // Ignore JSON parse errors
       }
@@ -671,7 +858,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
 
   log.warn("COMBO", `All models failed | ${msg}`);
   return new Response(
-    JSON.stringify({ error: { message: msg } }),
+    JSON.stringify({ error: { message: msg, ...(lastErrorType ? { type: lastErrorType } : {}), ...(lastErrorCode ? { code: lastErrorCode } : {}) } }),
     { status, headers: { "Content-Type": "application/json" } }
   );
 }
