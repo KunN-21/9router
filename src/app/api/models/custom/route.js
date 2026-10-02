@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel } from "@/models";
-import { CAPACITY_META } from "@/shared/constants/models";
+import { CAPACITY_META, isSttTransport } from "@/shared/constants/models";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,21 @@ function sanitizeCaps(caps) {
     if (typeof caps[key] === "boolean") clean[key] = caps[key];
   }
   return Object.keys(clean).length ? clean : null;
+}
+
+// Accepted STT transport markers live in the shared whitelist
+// (src/shared/constants/models STT_TRANSPORT_META) — the dashboard transport
+// select and this validator must agree on one set, so neither owns a copy.
+// Omitted transport keeps provider default (null). Explicit invalid,
+// non-string, or non-stt transport is a 400 at this trust boundary — the
+// engine must never silently route a mislabeled realtime model over REST.
+function sanitizeTransport(transport, type) {
+  if (type !== "stt") return null;
+  if (transport === undefined || transport === null || transport === "") return null;
+  if (!isSttTransport(transport)) {
+    throw new Error(`Unsupported STT transport: ${String(transport).slice(0, 64)}`);
+  }
+  return transport.trim();
 }
 
 // GET /api/models/custom - List all custom models
@@ -28,12 +43,18 @@ export async function GET() {
 // POST /api/models/custom - Add custom model
 export async function POST(request) {
   try {
-    const { providerAlias, id, type, name, caps } = await request.json();
+    const { providerAlias, id, type, name, caps, transport } = await request.json();
     if (!providerAlias || !id) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
     const cleanCaps = sanitizeCaps(caps);
-    const added = await addCustomModel({ providerAlias, id, type: type || "llm", name, ...(cleanCaps ? { caps: cleanCaps } : {}) });
+    let cleanTransport = null;
+    try {
+      cleanTransport = sanitizeTransport(transport, type || "llm");
+    } catch (err) {
+      return NextResponse.json({ error: err.message || "Unsupported STT transport" }, { status: 400 });
+    }
+    const added = await addCustomModel({ providerAlias, id, type: type || "llm", name, ...(cleanCaps ? { caps: cleanCaps } : {}), ...(cleanTransport ? { transport: cleanTransport } : {}) });
     return NextResponse.json({ success: true, added });
   } catch (error) {
     console.log("Error adding custom model:", error);

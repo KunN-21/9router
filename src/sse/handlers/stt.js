@@ -2,7 +2,7 @@ import {
   extractApiKey, isValidApiKey,
   getProviderCredentials, markAccountUnavailable,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getCustomModels } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleSttCore } from "open-sse/handlers/sttCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -16,6 +16,23 @@ const CREDENTIALED_PROVIDERS = new Set(
     .filter(([, p]) => p.serviceKinds?.includes("stt") && !p.noAuth && p.sttConfig?.authType !== "none")
     .map(([id]) => id)
 );
+
+// Custom-model transport marker: models registered through
+// /api/models/custom may pin a specialized STT transport (e.g.
+// "gemini-live"). The engine dispatches on the marker itself, so the app
+// layer only resolves it — same getModelInfo-style provider+model pairing,
+// restricted to type "stt" records.
+async function resolveCustomModelTransport(provider, model) {
+  try {
+    const customModels = await getCustomModels();
+    const hit = customModels.find((c) => c && c.type === "stt"
+      && c.providerAlias === provider && c.id === model
+      && typeof c.transport === "string" && c.transport.trim());
+    return hit ? hit.transport.trim() : null;
+  } catch {
+    return null; // DB unreadable → built-in registry marker still applies
+  }
+}
 
 export async function handleStt(request) {
   let formData;
@@ -45,10 +62,31 @@ export async function handleStt(request) {
   const { provider, model } = modelInfo;
   log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
 
+  const modelTransport = await resolveCustomModelTransport(provider, model);
+  // Per-request lifecycle + proxy context — plumbed to the realtime
+  // transports; REST transports ignore both.
+  const sttProxyOptions = {
+    connectionProxyEnabled: false,
+    connectionProxyUrl: "",
+    connectionNoProxy: "",
+    vercelRelayUrl: "",
+  };
+
+  // Client gone before account selection — stop, no fallback, no account mark.
+  if (request?.signal?.aborted) {
+    log.warn("STT", "Client aborted request");
+    return errorResponse(499, "Request aborted");
+  }
+
   // noAuth providers
   if (!CREDENTIALED_PROVIDERS.has(provider)) {
-    const result = await handleSttCore({ provider, model, formData, sttConfig: AI_PROVIDERS[provider]?.sttConfig });
+    const result = await handleSttCore({ provider, model, formData, sttConfig: AI_PROVIDERS[provider]?.sttConfig, transport: modelTransport, signal: request?.signal, proxyOptions: sttProxyOptions });
     if (result.success) return result.response;
+    // 499: client cancelled — outer contract, no fallback, no account mark.
+    if (result.status === 499 || request?.signal?.aborted) {
+      log.warn("STT", "Request aborted by client");
+      return errorResponse(499, "Request aborted");
+    }
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "STT failed");
   }
 
@@ -72,9 +110,28 @@ export async function handleStt(request) {
 
     log.info("AUTH", `\x1b[32mUsing ${provider} account: ${credentials.connectionName}\x1b[0m`);
 
-    const result = await handleSttCore({ provider, model, formData, credentials, sttConfig: AI_PROVIDERS[provider]?.sttConfig });
+    // Resolve explicit proxy from the selected connection (no env/autodetect
+    // here — WS cannot honour a dispatcher, so only an explicit per-connection
+    // proxy fails closed inside the Live transport; omitted stays direct).
+    const connData = credentials?.providerSpecificData || {};
+    const result = await handleSttCore({
+      provider, model, formData, credentials, sttConfig: AI_PROVIDERS[provider]?.sttConfig, transport: modelTransport, signal: request?.signal,
+      proxyOptions: {
+        connectionProxyEnabled: connData.connectionProxyEnabled === true,
+        connectionProxyUrl: connData.connectionProxyUrl || "",
+        connectionNoProxy: connData.connectionNoProxy || "",
+        vercelRelayUrl: connData.vercelRelayUrl || "",
+      },
+    });
 
     if (result.success) return result.response;
+
+    // Client abort: stop the fallback loop immediately, never mark the
+    // account bad — same contract as handleSystemone.
+    if (result.status === 499 || request?.signal?.aborted) {
+      log.warn("STT", "Request aborted by client");
+      return errorResponse(499, "Request aborted");
+    }
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
     if (shouldFallback) {
