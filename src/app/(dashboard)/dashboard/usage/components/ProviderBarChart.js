@@ -10,11 +10,8 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Cell,
 } from "recharts";
 import Card from "@/shared/components/Card";
-
-const COLORS = ["#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#10b981", "#f97316"];
 
 const fmtTokens = (n) => {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
@@ -41,7 +38,11 @@ export default function ProviderBarChart({ byProvider }) {
   const label = viewMode === "tokens" ? "Tokens" : "Requests";
 
   return (
-    <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
+    <Card
+      role="group"
+      aria-label={"Provider usage by " + label.toLowerCase()}
+      className="flex min-w-0 flex-col gap-3 p-3 sm:p-4"
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-semibold text-text-muted uppercase tracking-wide">By Provider</span>
         <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1">
@@ -94,13 +95,37 @@ export default function ProviderBarChart({ byProvider }) {
               }}
               formatter={(value) => [fmt(value), label]}
             />
-            <Bar dataKey={viewMode} radius={[4, 4, 0, 0]}>
-              {chartData.map((_, i) => (
-                <Cell key={i} fill={COLORS[i % COLORS.length]} fillOpacity={0.85} />
-              ))}
-            </Bar>
+            <Bar
+              dataKey={viewMode}
+              fill={viewMode === "tokens" ? "#6366f1" : "#14b8a6"}
+              radius={[4, 4, 0, 0]}
+            />
           </BarChart>
         </ResponsiveContainer>
+      )}
+
+      {chartData.length > 0 && (
+        <details className="mt-1 text-xs text-text-muted">
+          <summary className="cursor-pointer hover:text-text">View table</summary>
+          <div className="mt-1 max-h-36 overflow-y-auto">
+            <table className="w-full text-left text-xs" aria-label="Provider usage table">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="py-1 pr-2 font-medium">Provider</th>
+                  <th className="py-1 text-right font-medium">{label}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chartData.map((d) => (
+                  <tr key={d.name} className="border-b border-border/50">
+                    <td className="py-1 pr-2">{d.name}</td>
+                    <td className="py-1 text-right">{fmt(d[viewMode])}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
     </Card>
   );

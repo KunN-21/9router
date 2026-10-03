@@ -807,7 +807,15 @@ export async function getChartData(period = "7d") {
     const earliest = new Date(dayRows[0].dateKey + "T00:00:00");
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const diffDays = Math.max(1, Math.round((today - earliest) / 86400000) + 1);
+
+    // If all history rows are in the future (clock rollback), return [] to avoid future buckets
+    if (earliest.getTime() > today.getTime()) return [];
+
+    // Civil-date distance via UTC calendar components to eliminate DST drift
+    const utcEarliest = Date.UTC(earliest.getFullYear(), earliest.getMonth(), earliest.getDate());
+    const utcToday = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+    const diffDays = Math.floor((utcToday - utcEarliest) / 86400000) + 1;
+    if (diffDays <= 0) return [];
 
     return Array.from({ length: diffDays }, (_, i) => {
       const d = new Date(earliest);

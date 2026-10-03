@@ -10,11 +10,8 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Cell,
 } from "recharts";
 import Card from "@/shared/components/Card";
-
-const COLORS = ["#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6"];
 
 const fmtTokens = (n) => {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
@@ -31,7 +28,8 @@ export default function TopModelsChart({ byModel }) {
     if (!byModel) return [];
     return Object.values(byModel)
       .map((data) => ({
-        name: truncate(data.rawModel || "Unknown"),
+        name: data.rawModel || "Unknown",
+        rawModel: data.rawModel || "Unknown",
         tokens: (data.promptTokens || 0) + (data.completionTokens || 0),
         requests: data.requests || 0,
       }))
@@ -44,7 +42,11 @@ export default function TopModelsChart({ byModel }) {
   const label = viewMode === "tokens" ? "Tokens" : "Requests";
 
   return (
-    <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
+    <Card
+      role="group"
+      aria-label={"Top models usage by " + label.toLowerCase()}
+      className="flex min-w-0 flex-col gap-3 p-3 sm:p-4"
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-semibold text-text-muted uppercase tracking-wide">Top Models</span>
         <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1">
@@ -90,6 +92,7 @@ export default function TopModelsChart({ byModel }) {
               tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.7 }}
               tickLine={false}
               axisLine={false}
+              tickFormatter={(v) => truncate(v, 22)}
               width={90}
             />
             <Tooltip
@@ -99,15 +102,40 @@ export default function TopModelsChart({ byModel }) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
+              labelFormatter={(label) => label}
               formatter={(value) => [fmt(value), label]}
             />
-            <Bar dataKey={viewMode} radius={[0, 4, 4, 0]}>
-              {chartData.map((_, i) => (
-                <Cell key={i} fill={COLORS[i % COLORS.length]} fillOpacity={0.85} />
-              ))}
-            </Bar>
+            <Bar
+              dataKey={viewMode}
+              fill={viewMode === "tokens" ? "#6366f1" : "#14b8a6"}
+              radius={[0, 4, 4, 0]}
+            />
           </BarChart>
         </ResponsiveContainer>
+      )}
+
+      {chartData.length > 0 && (
+        <details className="mt-1 text-xs text-text-muted">
+          <summary className="cursor-pointer hover:text-text">View table</summary>
+          <div className="mt-1 max-h-36 overflow-y-auto">
+            <table className="w-full text-left text-xs" aria-label="Top models usage table">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="py-1 pr-2 font-medium">Model</th>
+                  <th className="py-1 text-right font-medium">{label}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chartData.map((d) => (
+                  <tr key={d.name} className="border-b border-border/50">
+                    <td className="py-1 pr-2">{d.name}</td>
+                    <td className="py-1 text-right">{fmt(d[viewMode])}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
     </Card>
   );
