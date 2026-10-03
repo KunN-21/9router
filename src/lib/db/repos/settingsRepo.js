@@ -86,6 +86,24 @@ export function mergeWithDefaults(raw) {
       }
     }
   }
+  if (merged.capacityAdapter && typeof merged.capacityAdapter === "object") {
+    let clonedAdapter = null;
+    for (const capKey of Object.keys(merged.capacityAdapter)) {
+      const entry = merged.capacityAdapter[capKey];
+      if (Array.isArray(entry?.models) && entry.models.some((m) => m === "oc/mimo-v2.5-free")) {
+        if (!clonedAdapter) {
+          clonedAdapter = { ...merged.capacityAdapter };
+          merged.capacityAdapter = clonedAdapter;
+        }
+        clonedAdapter[capKey] = {
+          ...entry,
+          models: entry.models.map((m) =>
+            m === "oc/mimo-v2.5-free" ? "oc/mimo-v2.6-flash-free" : m
+          ),
+        };
+      }
+    }
+  }
   return merged;
 }
 
