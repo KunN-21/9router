@@ -15,9 +15,11 @@ import Card from "./Card";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
 import UsageTable, { fmt, fmtTime } from "@/app/(dashboard)/dashboard/usage/components/UsageTable";
 import dynamic from "next/dynamic";
-// Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders
+// Lazy-load: keeps @xyflow/react and recharts out of the initial bundle
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
-import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
+const UsageChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/UsageChart"), { ssr: false });
+const ProviderBarChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderBarChart"), { ssr: false });
+const TopModelsChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/TopModelsChart"), { ssr: false });
 
 function timeAgo(timestamp) {
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -30,12 +32,12 @@ function timeAgo(timestamp) {
 // Auto-update time display every second without re-rendering parent
 function TimeAgo({ timestamp }) {
   const [, setTick] = useState(0);
-  
+
   useEffect(() => {
     const timer = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(timer);
   }, []);
-  
+
   return <>{timeAgo(timestamp)}</>;
 }
 
@@ -198,6 +200,7 @@ const PERIODS = [
   { value: "7d", label: "7D" },
   { value: "30d", label: "30D" },
   { value: "60d", label: "60D" },
+  { value: "all", label: "All" },
 ];
 
 export default function UsageStats({ period: periodProp, setPeriod: setPeriodProp, hidePeriodSelector = false } = {}) {
@@ -446,7 +449,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       {/* Period selector (hidden when controlled by parent) */}
       {!hidePeriodSelector && (
         <div className="flex w-full items-center gap-2 sm:w-auto sm:self-end">
-          <div className="grid flex-1 grid-cols-5 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex sm:flex-none">
+          <div className="grid flex-1 grid-cols-6 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex sm:flex-none">
             {PERIODS.map((p) => (
               <button
                 key={p.value}
@@ -466,6 +469,14 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
       {/* Overview cards */}
       {loading ? spinner : <OverviewCards stats={stats} />}
+
+      {/* Provider and model breakdown charts */}
+      {!loading && (stats?.byProvider || stats?.byModel) && (
+        <div className="grid min-w-0 grid-cols-1 gap-2 lg:grid-cols-2">
+          <ProviderBarChart byProvider={stats.byProvider} />
+          <TopModelsChart byModel={stats.byModel} />
+        </div>
+      )}
 
       {/* Provider topology + Recent Requests */}
       {loading ? spinner : (
