@@ -151,9 +151,22 @@ export async function POST(request) {
 
     // Normalize ANTHROPIC_BASE_URL to ensure /v1 suffix
     if (env.ANTHROPIC_BASE_URL) {
-      env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL.endsWith("/v1") 
-        ? env.ANTHROPIC_BASE_URL 
+      env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL.endsWith("/v1")
+        ? env.ANTHROPIC_BASE_URL
         : `${env.ANTHROPIC_BASE_URL}/v1`;
+    }
+
+    // Handle ANTHROPIC_AUTH_TOKEN:
+    // 1. Omitted from request: preserve existing token if any
+    // 2. Dummy form fallback ("sk_9router"): protect real existing token from being overwritten
+    // 3. Explicit new token: apply new token chosen by user
+    const incomingToken = env.ANTHROPIC_AUTH_TOKEN;
+    const existingToken = currentSettings.env?.ANTHROPIC_AUTH_TOKEN;
+
+    if (!incomingToken) {
+      if (existingToken) env.ANTHROPIC_AUTH_TOKEN = existingToken;
+    } else if (existingToken && incomingToken === "sk_9router" && existingToken !== "sk_9router") {
+      env.ANTHROPIC_AUTH_TOKEN = existingToken;
     }
 
     // Merge new env with existing settings
