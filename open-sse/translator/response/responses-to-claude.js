@@ -11,6 +11,8 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { CLAUDE_BLOCK, RESPONSES_ITEM, CLAUDE_STOP } from "../schema/index.js";
 import { sanitizeToolArgs } from "../concerns/toolArgs.js";
+import { CLAUDE_TOOL_PROGRESS_PING_INTERVAL_MS } from "../../config/runtimeConfig.js";
+import { SSE_PING_EVENT } from "../../utils/sseConstants.js";
 
 function stopThinkingBlock(state, results) {
   if (!state.thinkingBlockStarted) return;
@@ -47,6 +49,7 @@ export function responsesToClaudeResponse(chunk, state) {
     state.toolCalls = new Map(); // blockIndex -> { id, call_id, name, blockIndex, closed }
     state.toolArgBuffers = new Map(); // blockIndex -> string
     state.toolIndexByKey = new Map(); // item_id / call_id / output_index -> blockIndex
+    state.lastToolProgressPingAt = undefined;
 
     results.push({
       type: "message_start",
@@ -166,6 +169,19 @@ export function responsesToClaudeResponse(chunk, state) {
     if (blockIndex !== null && blockIndex !== undefined) {
       const current = state.toolArgBuffers.get(blockIndex) || "";
       state.toolArgBuffers.set(blockIndex, current + delta);
+      // ponytail: only active buffered tool-argument progress stays alive;
+      // true idle full-heartbeat needs future scoped transport/window proof.
+      if (typeof delta === "string" && delta !== "" && !state.finishReasonSent && !state.errorSent) {
+        const toolInfo = state.toolCalls.get(blockIndex);
+        if (toolInfo && !toolInfo.closed) {
+          const now = Date.now();
+          const last = state.lastToolProgressPingAt;
+          if (last === undefined || now - last >= CLAUDE_TOOL_PROGRESS_PING_INTERVAL_MS) {
+            state.lastToolProgressPingAt = now;
+            return [{ type: SSE_PING_EVENT }];
+          }
+        }
+      }
     }
     return null;
   }

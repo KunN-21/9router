@@ -55,6 +55,11 @@ export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 10
 // Client-specific stall timeout (under 300s, e.g. 240s) for downstream Claude clients
 export const CLAUDE_STREAM_STALL_TIMEOUT_MS = envMs("CLAUDE_STREAM_STALL_TIMEOUT_MS", 240 * 1000);
 
+// Progress ping cadence for buffered tool-argument deltas on the Responses→Claude
+// route: actual upstream progress already arrived, so re-emit a lightweight event
+// to reset the downstream client watchdog. Fixed, not env-tunable (watchdog is fixed).
+export const CLAUDE_TOOL_PROGRESS_PING_INTERVAL_MS = 15 * 1000;
+
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 

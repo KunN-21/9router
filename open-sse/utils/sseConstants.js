@@ -1,6 +1,9 @@
 // Shared SSE primitives (no imports → safe for executors + stream.js)
 export const SSE_DONE = "data: [DONE]\n\n";
 
+// Discriminator for translator-emitted tool-progress pings (pure data, no imports).
+export const SSE_PING_EVENT = "ping";
+
 export const SSE_HEADERS = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",
