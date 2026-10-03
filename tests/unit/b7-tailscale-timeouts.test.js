@@ -1,17 +1,19 @@
 // B7: tailscale enable uses 20s short wait; background default stays 180s.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const healthMocks = vi.hoisted(() => ({
-  probeUrlAlive: vi.fn(async () => false),
+const networkMocks = vi.hoisted(() => ({
+  resolveDns: vi.fn(async () => true),
+  fetch: vi.fn(async () => ({ ok: false })),
 }));
 
-vi.mock("@/lib/tunnel/tailscale/healthCheck.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    probeUrlAlive: healthMocks.probeUrlAlive,
-  };
-});
+vi.mock("@/lib/tunnel/shared/dnsResolver.js", () => ({
+  resolveDns: networkMocks.resolveDns,
+}));
+
+vi.mock("@/lib/tunnel/shared/state.js", () => ({
+  loadState: vi.fn(() => null),
+  generateShortId: vi.fn(() => "synthetic"),
+}));
 
 vi.mock("@/lib/tunnel/tailscale/tailscale.js", () => ({
   startDaemonWithPassword: vi.fn(async () => true),
@@ -43,9 +45,12 @@ describe("tailscale timeouts (fake clock, no daemon/network)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    healthMocks.probeUrlAlive.mockResolvedValue(false);
+    networkMocks.resolveDns.mockResolvedValue(true);
+    networkMocks.fetch.mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", networkMocks.fetch);
   });
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -60,6 +65,8 @@ describe("tailscale timeouts (fake clock, no daemon/network)", () => {
     const assertion = expect(p).rejects.toThrow("Health check timeout after 20000ms");
     await vi.advanceTimersByTimeAsync(20000 + 5000);
     await assertion;
+    expect(networkMocks.resolveDns).toHaveBeenCalledWith("probe.invalid", HEALTH_CHECK.dnsTimeoutMs);
+    expect(networkMocks.fetch).toHaveBeenCalled();
   });
 
   it("omitted option keeps the 180000ms default", async () => {
@@ -68,6 +75,8 @@ describe("tailscale timeouts (fake clock, no daemon/network)", () => {
     const assertion = expect(p).rejects.toThrow("Health check timeout after 180000ms");
     await vi.advanceTimersByTimeAsync(180000 + 5000);
     await assertion;
+    expect(networkMocks.resolveDns).toHaveBeenCalledWith("probe.invalid", HEALTH_CHECK.dnsTimeoutMs);
+    expect(networkMocks.fetch).toHaveBeenCalled();
   });
 
   it("cancellation still raises cancelled", async () => {
@@ -84,12 +93,16 @@ describe("tailscale timeouts (fake clock, no daemon/network)", () => {
 
   it("manager call enableTailscale actually invokes waitForHealth with 20000ms option", async () => {
     const spy = vi.spyOn(health, "waitForHealth").mockResolvedValue(true);
-    const res = await mgr.enableTailscale(29999);
-    expect(res.success).toBe(true);
-    expect(spy).toHaveBeenCalledWith(
-      "http://funnel.mock",
-      expect.any(Object),
-      { timeoutMs: 20000 }
-    );
+    try {
+      const res = await mgr.enableTailscale(29999);
+      expect(res.success).toBe(true);
+      expect(spy).toHaveBeenCalledWith(
+        "http://funnel.mock",
+        expect.any(Object),
+        { timeoutMs: 20000 }
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

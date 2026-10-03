@@ -22,19 +22,22 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try {
-    const { getAdapter } = await import("@/lib/db/driver.js");
-    const adapter = await getAdapter();
+    const adapter = global._dbAdapter?.instance;
     if (adapter && typeof adapter.close === "function") {
-      adapter.close();
+      await adapter.close();
     }
-  } catch {}
-  if (global._dbAdapter) {
-    global._dbAdapter.instance = null;
-    global._dbAdapter.initPromise = null;
+  } finally {
+    if (global._dbAdapter) {
+      global._dbAdapter.instance = null;
+      global._dbAdapter.initPromise = null;
+      global._dbAdapter.logged = false;
+    }
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   }
-  try { if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
 });
 
 describe("Usage stats API key attribution", () => {

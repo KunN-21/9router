@@ -19,19 +19,22 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try {
-    const { getAdapter } = await import("@/lib/db/driver.js");
-    const adapter = await getAdapter();
+    const adapter = global._dbAdapter?.instance;
     if (adapter && typeof adapter.close === "function") {
-      adapter.close();
+      await adapter.close();
     }
-  } catch {}
-  if (global._dbAdapter) {
-    global._dbAdapter.instance = null;
-    global._dbAdapter.initPromise = null;
+  } finally {
+    if (global._dbAdapter) {
+      global._dbAdapter.instance = null;
+      global._dbAdapter.initPromise = null;
+      global._dbAdapter.logged = false;
+    }
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   }
-  try { if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
 });
 
 async function seed(provider, n) {
@@ -68,7 +71,21 @@ describe("provider insert is O(1) in pool size (#4311)", () => {
     const P = `b7-norewrite-${Date.now()}-3`;
     await seed(P, 10);
     const before = (await db.getProviderConnections({ provider: P })).map((c) => [c.id, c.priority]);
-    await db.createProviderConnection({ provider: P, authType: "apikey", name: "fresh", apiKey: "k-fresh" });
+
+    const adapter = global._dbAdapter?.instance;
+    const runSpy = adapter && typeof adapter.run === "function" ? vi.spyOn(adapter, "run") : null;
+    try {
+      await db.createProviderConnection({ provider: P, authType: "apikey", name: "fresh", apiKey: "k-fresh" });
+      if (runSpy) {
+        const priorityUpdates = runSpy.mock.calls.filter(([sql]) =>
+          typeof sql === "string" && /UPDATE\s+providerConnections\s+SET\s+priority/i.test(sql)
+        );
+        expect(priorityUpdates).toHaveLength(0);
+      }
+    } finally {
+      if (runSpy) runSpy.mockRestore();
+    }
+
     const afterMap = new Map((await db.getProviderConnections({ provider: P })).map((c) => [c.id, c.priority]));
     for (const [id, prio] of before) expect(afterMap.get(id)).toBe(prio);
   });
