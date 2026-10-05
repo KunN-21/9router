@@ -370,6 +370,7 @@ export class CodexExecutor extends BaseExecutor {
         jobs.push({ item, idx, url, detail });
       });
     }
+    // ponytail: uncapped parallel fetch; upgrade path = p-limit/chunked when large batches expected
     await Promise.all(jobs.map(async ({ item, idx, url, detail }) => {
       const t0 = Date.now();
       try {
@@ -378,7 +379,7 @@ export class CodexExecutor extends BaseExecutor {
       } catch {
         item.content[idx] = { type: "input_image", image_url: url, detail };
       } finally {
-        dbg("CODEX", `prefetch ${url.slice(0, 80)} | ${Date.now() - t0}ms`);
+        dbg("CODEX", `prefetch ${String(url).slice(0, 80)} | ${Date.now() - t0}ms`);
       }
     }));
   }
