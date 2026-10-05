@@ -355,19 +355,32 @@ export class CodexExecutor extends BaseExecutor {
    */
   async prefetchImages(body) {
     if (!Array.isArray(body?.input)) return;
+    const jobs = [];
     for (const item of body.input) {
       if (!Array.isArray(item.content)) continue;
-      const pending = item.content.map(async (c) => {
-        if (c.type !== "image_url") return c;
+      item.content.forEach((c, idx) => {
+        if (c?.type !== "image_url") return;
         const url = typeof c.image_url === "string" ? c.image_url : c.image_url?.url;
         const detail = c.image_url?.detail || "auto";
-        if (!url) return c;
-        if (url.startsWith("data:")) return { type: "input_image", image_url: url, detail };
-        const fetched = await fetchImageAsBase64(url, { timeoutMs: 15000 });
-        return { type: "input_image", image_url: fetched?.url || url, detail };
+        if (!url) return;
+        if (url.startsWith("data:")) {
+          item.content[idx] = { type: "input_image", image_url: url, detail };
+          return;
+        }
+        jobs.push({ item, idx, url, detail });
       });
-      item.content = await Promise.all(pending);
     }
+    await Promise.all(jobs.map(async ({ item, idx, url, detail }) => {
+      const t0 = Date.now();
+      try {
+        const fetched = await fetchImageAsBase64(url, { timeoutMs: 15000 });
+        item.content[idx] = { type: "input_image", image_url: fetched?.url || url, detail };
+      } catch {
+        item.content[idx] = { type: "input_image", image_url: url, detail };
+      } finally {
+        dbg("CODEX", `prefetch ${url.slice(0, 80)} | ${Date.now() - t0}ms`);
+      }
+    }));
   }
 
   async execute(args) {
