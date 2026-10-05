@@ -200,6 +200,29 @@ describe("combo failover on empty-but-successful streams (#3463)", () => {
       choices: [{ message: { content: "json answer" } }],
     });
   });
+
+  it("treats Responses reasoning delta and done frames as content", async () => {
+    const { attempted, text } = await runCombo({
+      "p1/first": () => sseResponse([
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}\n\n',
+      ]),
+      "p2/second": () => sseResponse(['data: {"choices":[{"delta":{"content":"must not run"}}]}\n\n']),
+    });
+
+    expect(attempted).toEqual(["p1/first"]);
+    expect(text).toContain("thinking");
+  });
+
+  it("treats reasoning output_item.done as content", async () => {
+    const { attempted } = await runCombo({
+      "p1/first": () => sseResponse([
+        'data: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"slow thought"}]}}\n\n',
+      ]),
+      "p2/second": () => sseResponse(['data: {"choices":[{"delta":{"content":"must not run"}}]}\n\n']),
+    });
+
+    expect(attempted).toEqual(["p1/first"]);
+  });
 });
 
 describe("combo empty-stream guard honors caller abort (#3463)", () => {
