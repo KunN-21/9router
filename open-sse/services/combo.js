@@ -181,6 +181,16 @@ function frameCarriesContent(line) {
   // OpenAI Responses API: output_text/function-call argument deltas, done text, item done, or completed output.
   if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
   if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.reasoning_summary_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.output_item.done" && parsed.item?.type === "reasoning") {
+    const summary = parsed.item.summary;
+    if (Array.isArray(summary) && summary.some((p) => nonEmptyString(p?.text))) return true;
+    if (nonEmptyString(parsed.item.text)) return true;
+  }
+  if (parsed.type === "response.content_part.done") {
+    const part = parsed.part || parsed.content_part;
+    if (nonEmptyString(part?.text)) return true;
+  }
   if (parsed.type === "response.output_item.done") {
     if (parsed.item?.type === "message") {
       const parts = parsed.item.content;
