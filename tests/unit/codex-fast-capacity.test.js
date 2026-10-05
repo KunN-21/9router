@@ -14,6 +14,16 @@ function streamFromText(text) {
   });
 }
 
+function streamFromChunks(texts) {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const text of texts) controller.enqueue(encoder.encode(text));
+      controller.close();
+    },
+  });
+}
+
 describe("Codex fast tier and capacity handling", () => {
   it("maps Codex fast tier to priority and max reasoning to xhigh", () => {
     const executor = new CodexExecutor();
@@ -81,6 +91,45 @@ describe("Codex fast tier and capacity handling", () => {
 
     const peek = await executor._peekSseTransientError(response);
     expect(peek.matched).toBeNull();
+    await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("does not judge a capacity JSON half-frame split across chunks", async () => {
+    const executor = new CodexExecutor();
+    const full = [
+      "event: error",
+      'data: {"error":{"message":"Selected model is at capacity. Please try a different model."}}',
+      "",
+    ].join("\n");
+    // Split right after "capacity": chunk 1 holds the full pattern but no
+    // newline, so a half-frame judge would match on truncated text.
+    const splitAt = full.indexOf("capacity. Please") + "capacity".length;
+    const response = new Response(
+      streamFromChunks([full.slice(0, splitAt), full.slice(splitAt)]),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.accountFallback).toBe(true);
+    expect(peek.message).toBe("Selected model is at capacity. Please try a different model.");
+  });
+
+  it("replays a content delta split across chunks verbatim", async () => {
+    const executor = new CodexExecutor();
+    const text = [
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"OK"}',
+      "",
+    ].join("\n");
+    const splitAt = text.indexOf('"delta":"OK"') + '"delta":"O'.length;
+    const response = new Response(
+      streamFromChunks([text.slice(0, splitAt), text.slice(splitAt)]),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    expect(peek.accountFallback).toBe(false);
     await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
   });
 
