@@ -428,11 +428,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
+    const now = Date.now();
     trackPendingRequest(model, provider, connectionId, false, true);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
-      latency: { ttft: Date.now() - requestStartTime, total: Date.now() - requestStartTime },
+      latency: { ttft: now - requestStartTime, total: now - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
@@ -505,9 +506,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     trackPendingRequest(model, provider, connectionId, false, true);
     const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
+    const errNow = Date.now();
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
-      latency: { ttft: Date.now() - requestStartTime, total: Date.now() - requestStartTime },
+      latency: { ttft: errNow - requestStartTime, total: errNow - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
