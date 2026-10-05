@@ -162,6 +162,8 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
           name,
           description: String(tool.description || ""),
           parameters: normalizeToolParameters(tool.input_schema),
+          // Không để Responses ép các trường tùy chọn thành bắt buộc.
+          strict: typeof tool.strict === "boolean" ? tool.strict : false,
         });
       }
       if (tools.length > 0) result.tools = tools;

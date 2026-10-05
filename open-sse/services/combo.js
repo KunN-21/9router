@@ -5,7 +5,8 @@
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse, clientStatusForBreakerOpen } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
-import { FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
+import { ERROR_TYPES } from "../config/errorConfig.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
@@ -181,6 +182,16 @@ function frameCarriesContent(line) {
   // OpenAI Responses API: output_text/function-call argument deltas, done text, item done, or completed output.
   if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
   if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.reasoning_summary_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.output_item.done" && parsed.item?.type === "reasoning") {
+    const summary = parsed.item.summary;
+    if (Array.isArray(summary) && summary.some((p) => nonEmptyString(p?.text))) return true;
+    if (nonEmptyString(parsed.item.text)) return true;
+  }
+  if (parsed.type === "response.content_part.done") {
+    const part = parsed.part || parsed.content_part;
+    if (nonEmptyString(part?.text)) return true;
+  }
   if (parsed.type === "response.output_item.done") {
     if (parsed.item?.type === "message") {
       const parts = parsed.item.content;
@@ -711,8 +722,15 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   let lastErrorCode = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
+  let lastNoContentTimeout = false;
 
   for (let i = 0; i < rotatedModels.length; i++) {
+    // Synthetic-timeout state belongs to the current attempt only: clear it up
+    // front so a prior timeout cannot leak type/code into a later throw,
+    // typeless JSON error, or abort. lastStatus keeps its existing rules.
+    lastNoContentTimeout = false;
+    lastErrorType = null;
+    lastErrorCode = null;
     if (signal?.aborted) {
       lastError = signal?.reason?.message || "Request aborted";
       if (!lastStatus) lastStatus = 499;
@@ -722,7 +740,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr, { signal });
+      const result = await handleSingleModel(body, modelStr, { signal, skipSsePeek: true });
       if (signal?.aborted) {
         await result?.body?.cancel?.(signal?.reason).catch(() => {});
         lastError = signal?.reason?.message || "Request aborted";
@@ -734,7 +752,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // open an SSE stream, send nothing but keepalives and close cleanly; that
       // must fall through to the next model rather than be handed to the client.
       if (result.ok) {
-        const { hasContent, body: replayBody, aborted, error: streamError } = await peekStreamForContent(result, { signal });
+        const { hasContent, body: replayBody, timedOut, aborted, error: streamError } = await peekStreamForContent(result, { signal });
         if (aborted || signal?.aborted) {
           await replayBody?.cancel?.(signal?.reason).catch(() => {});
           lastError = signal?.reason?.message || "Request aborted";
@@ -779,9 +797,16 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
           continue;
         }
 
-        lastError = "provider returned an empty stream";
-        if (!lastStatus) lastStatus = 503;
-        log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`);
+        lastNoContentTimeout = timedOut === true;
+        lastError = lastNoContentTimeout ? "provider timed out waiting for stream content" : "provider returned an empty stream";
+        lastStatus = lastNoContentTimeout ? HTTP_STATUS.GATEWAY_TIMEOUT : HTTP_STATUS.SERVICE_UNAVAILABLE;
+        lastErrorType = lastNoContentTimeout ? ERROR_TYPES[HTTP_STATUS.GATEWAY_TIMEOUT].type : null;
+        lastErrorCode = lastNoContentTimeout ? ERROR_TYPES[HTTP_STATUS.GATEWAY_TIMEOUT].code : null;
+        if (timedOut) {
+          log.warn("COMBO", `Model ${modelStr} timed out waiting for stream content, trying next`);
+        } else {
+          log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`);
+        }
         continue;
       }
 
@@ -847,13 +872,25 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   // is left exactly as it was. Note lastStatus is the FIRST member's status while
   // lastError is the LAST member's text, so this pair can disagree — pre-existing,
   // and the reason this only narrows a 404 rather than trusting the text further.
+  // Exception: the synthetic no-content branch above keeps the LATEST member's
+  // status/type/code so a timeout is not reported with a stale earlier class.
   const status = allDisabled ? 503 : clientStatusForBreakerOpen(lastStatus || 503, lastError);
   const msg = lastError || "All combo models unavailable";
 
   if (earliestRetryAfter) {
     const retryHuman = formatRetryAfter(earliestRetryAfter);
     log.warn("COMBO", `All models failed | ${status} | ${msg} (${retryHuman})`);
-    return unavailableResponse(status, msg, earliestRetryAfter, retryHuman);
+    const base = unavailableResponse(status, msg, earliestRetryAfter, retryHuman);
+    // unavailableResponse chỉ trả message: giữ nguyên header/suffix của nó,
+    // bổ sung type/code chỉ khi attempt cuối là timeout synthetic (boolean
+    // tường minh, không so message text).
+    // Mọi đường khác (EOF, 429 thuần, structured error, upstream trùng message)
+    // trả base nguyên.
+    if (!lastNoContentTimeout) return base;
+    return new Response(
+      JSON.stringify({ error: { message: `${msg} (${retryHuman})`, ...(lastErrorType ? { type: lastErrorType } : {}), ...(lastErrorCode ? { code: lastErrorCode } : {}) } }),
+      { status, headers: base.headers }
+    );
   }
 
   log.warn("COMBO", `All models failed | ${msg}`);

@@ -487,4 +487,59 @@ describe("Antigravity Weekly Quota Parser & Fetcher", () => {
       expect(proxyAwareFetch).toHaveBeenCalledTimes(1);
     });
   });
+  describe("Missing-Field Unknown Rendering (local adaptation, ported)", () => {
+    it("missing weekly field renders unknown (null, dash) and never 0", async () => {
+      const {
+        calculatePercentage,
+        getRemainingPercentage,
+        getStatusColor,
+        getStatusEmoji,
+        parseQuotaData,
+      } = await import("../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js");
+
+      // 1. Quota with missing remainingPercentage and missing used/total
+      const missingQuotaRow = {
+        name: "Gemini Weekly",
+        modelKey: "gemini_weekly",
+        used: null,
+        total: null,
+        remainingPercentage: null,
+        resetAt: null,
+      };
+
+      expect(getRemainingPercentage(missingQuotaRow)).toBeNull();
+      expect(getStatusColor(getRemainingPercentage(missingQuotaRow))).toBe("gray");
+      expect(getStatusEmoji(getRemainingPercentage(missingQuotaRow))).toBe("⚪");
+
+      // 2. Quota parsed via parseQuotaData with missing fields
+      const rawDataWithMissingFields = {
+        quotas: {
+          gemini_weekly: {
+            displayName: "Gemini Weekly",
+            resetAt: "2026-10-05T00:00:00Z",
+            // used, total, remainingPercentage are missing!
+          },
+        },
+      };
+
+      const normalized = parseQuotaData("antigravity", rawDataWithMissingFields);
+      expect(normalized).toHaveLength(1);
+      expect(normalized[0].used).toBeNull();
+      expect(normalized[0].total).toBeNull();
+      expect(normalized[0].remainingPercentage).toBeNull();
+      expect(getRemainingPercentage(normalized[0])).toBeNull();
+
+      // 3. calculatePercentage with 0 or missing total returns null, NEVER 0
+      expect(calculatePercentage(0, 0)).toBeNull();
+      expect(calculatePercentage(undefined, undefined)).toBeNull();
+      expect(calculatePercentage(null, null)).toBeNull();
+      expect(calculatePercentage(5, 0)).toBeNull();
+      expect(calculatePercentage(0, null)).toBeNull();
+
+      // 4. Valid values still calculate correctly
+      expect(calculatePercentage(0, 1000)).toBe(100);
+      expect(calculatePercentage(500, 1000)).toBe(50);
+      expect(calculatePercentage(1000, 1000)).toBe(0);
+    });
+  });
 });

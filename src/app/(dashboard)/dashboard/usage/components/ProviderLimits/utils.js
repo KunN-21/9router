@@ -264,6 +264,7 @@ export function formatResetTime(date) {
  * @returns {string} Color name: "green" | "yellow" | "red"
  */
 export function getStatusColor(percentage) {
+  if (percentage === null || percentage === undefined || !Number.isFinite(percentage)) return "gray";
   if (percentage > 70) return "green";
   if (percentage >= 30) return "yellow";
   return "red"; // 0-29% including 0% (out of quota) - show red
@@ -275,6 +276,7 @@ export function getStatusColor(percentage) {
  * @returns {string} Emoji: "🟢" | "🟡" | "🔴"
  */
 export function getStatusEmoji(percentage) {
+  if (percentage === null || percentage === undefined || !Number.isFinite(percentage)) return "⚪";
   if (percentage > 70) return "🟢";
   if (percentage >= 30) return "🟡";
   return "🔴"; // 0-29% including 0% (out of quota) - show red
@@ -284,11 +286,11 @@ export function getStatusEmoji(percentage) {
  * Calculate remaining percentage
  * @param {number} used - Used amount
  * @param {number} total - Total amount
- * @returns {number} Remaining percentage (0-100)
+ * @returns {number|null} Remaining percentage (0-100) or null if unknown
  */
 export function calculatePercentage(used, total) {
-  if (!total || total === 0) return 0;
-  if (!used || used < 0) return 100;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  if (!Number.isFinite(used) || used < 0) return 100;
   if (used >= total) return 0;
 
   return Math.round(((total - used) / total) * 100);
@@ -297,18 +299,22 @@ export function calculatePercentage(used, total) {
 /**
  * Get remaining percentage from a normalized quota row
  * @param {Object} quota - Normalized quota object
- * @returns {number} Remaining percentage (0-100)
+ * @returns {number|null} Remaining percentage (0-100) or null if unknown
  */
 export function getRemainingPercentage(quota) {
-  if (quota?.remaining !== undefined) {
+  if (Number.isFinite(quota?.remaining)) {
     return Math.max(0, Math.round(quota.remaining));
   }
 
-  if (quota?.remainingPercentage !== undefined) {
+  if (Number.isFinite(quota?.remainingPercentage)) {
     return Math.round(quota.remainingPercentage);
   }
 
-  return calculatePercentage(quota?.used, quota?.total);
+  if (Number.isFinite(quota?.used) && Number.isFinite(quota?.total)) {
+    return calculatePercentage(quota.used, quota.total);
+  }
+
+  return null;
 }
 
 export function getQuotaVisibilityKey(quota) {
@@ -388,10 +394,12 @@ export function parseQuotaData(provider, data) {
             normalizedQuotas.push({
               name: quota.displayName || modelKey,
               modelKey,
-              used: quota.used || 0,
-              total: quota.total || 0,
-              resetAt: quota.resetAt || null,
-              remainingPercentage: quota.remainingPercentage,
+              used: Number.isFinite(quota?.used) ? quota.used : null,
+              total: Number.isFinite(quota?.total) ? quota.total : null,
+              resetAt: quota?.resetAt ?? null,
+              remainingPercentage: Number.isFinite(quota?.remainingPercentage)
+                ? quota.remainingPercentage
+                : (Number.isFinite(quota?.remaining) ? quota.remaining : null),
             });
           });
 
@@ -399,10 +407,12 @@ export function parseQuotaData(provider, data) {
             normalizedQuotas.push({
               name: quota.displayName || modelKey,
               modelKey,
-              used: quota.used || 0,
-              total: quota.total || 0,
-              resetAt: quota.resetAt || null,
-              remainingPercentage: quota.remainingPercentage,
+              used: Number.isFinite(quota?.used) ? quota.used : null,
+              total: Number.isFinite(quota?.total) ? quota.total : null,
+              resetAt: quota?.resetAt ?? null,
+              remainingPercentage: Number.isFinite(quota?.remainingPercentage)
+                ? quota.remainingPercentage
+                : (Number.isFinite(quota?.remaining) ? quota.remaining : null),
             });
           });
 
@@ -410,10 +420,12 @@ export function parseQuotaData(provider, data) {
             normalizedQuotas.push({
               name: quota.displayName || modelKey,
               modelKey,
-              used: quota.used || 0,
-              total: quota.total || 0,
-              resetAt: quota.resetAt || null,
-              remainingPercentage: quota.remainingPercentage,
+              used: Number.isFinite(quota?.used) ? quota.used : null,
+              total: Number.isFinite(quota?.total) ? quota.total : null,
+              resetAt: quota?.resetAt ?? null,
+              remainingPercentage: Number.isFinite(quota?.remainingPercentage)
+                ? quota.remainingPercentage
+                : (Number.isFinite(quota?.remaining) ? quota.remaining : null),
             });
           });
         }

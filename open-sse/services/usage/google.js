@@ -195,6 +195,9 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
         'gpt-oss-120b-medium',
         // Image generation models
         'gemini-3.1-flash-image',
+        // Weekly family pools
+        'gemini_weekly',
+        'claude_gpt_weekly',
       ];
 
       for (const [modelKey, info] of Object.entries(data.models)) {
@@ -208,22 +211,35 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
           continue;
         }
 
-        const remainingFraction = info.quotaInfo.remainingFraction || 0;
-        const remainingPercentage = remainingFraction * 100;
+        const rawFraction = info.quotaInfo.remainingFraction != null
+          ? Number(info.quotaInfo.remainingFraction)
+          : null;
+        const isFiniteFraction = rawFraction != null && Number.isFinite(rawFraction);
+        const remainingFraction = isFiniteFraction
+          ? Math.max(0, Math.min(1, rawFraction))
+          : null;
+        const remainingPercentage = remainingFraction != null ? remainingFraction * 100 : undefined;
 
         // Convert percentage to used/total for UI compatibility
         const total = 1000; // Normalized base
-        const remaining = Math.round(total * remainingFraction);
-        const used = total - remaining;
+        const remaining = remainingFraction != null ? Math.round(total * remainingFraction) : null;
+        const used = remaining != null ? total - remaining : null;
+
+        let displayName = info.displayName;
+        if (!displayName) {
+          if (modelKey === "gemini_weekly") displayName = "Gemini Weekly";
+          else if (modelKey === "claude_gpt_weekly") displayName = "Claude & GPT Weekly";
+          else displayName = modelKey;
+        }
 
         // Use modelKey as key (matches PROVIDER_MODELS id)
         quotas[modelKey] = {
           used,
-          total,
+          total: remainingFraction != null ? total : null,
           resetAt: parseResetTime(info.quotaInfo.resetTime),
           remainingPercentage,
           unlimited: false,
-          displayName: info.displayName || modelKey,
+          displayName,
         };
       }
     }

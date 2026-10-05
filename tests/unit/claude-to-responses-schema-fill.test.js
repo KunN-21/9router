@@ -70,7 +70,7 @@ describe("claude-to-responses schema fill", () => {
     const out = claudeToResponsesRequest("muse-spark-1.3", body, false, null);
     assert.ok(out.tools && out.tools.length === 1);
     assert.deepStrictEqual(out.tools[0].parameters, schemaWithProps);
-    assert.strictEqual(out.tools[0].strict, undefined);
+    assert.strictEqual(out.tools[0].strict, false);
   });
 
   it("preserves required/additionalProperties/$defs/oneOf while adding properties: {} when properties is missing", () => {

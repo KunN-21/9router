@@ -46,6 +46,11 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
 export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, credentials }) {
+  // Upstream headers already arrived when the executor resolved — this is the
+  // closest measurable first-byte time available at stream start. The
+  // onStreamComplete save later overwrites this record with the transform's
+  // real first-chunk time.
+  const streamStartAt = Date.now();
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -98,7 +103,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
-    latency: { ttft: 0, total: Date.now() - requestStartTime },
+    latency: { ttft: streamStartAt - requestStartTime, total: streamStartAt - requestStartTime },
     tokens: { prompt_tokens: 0, completion_tokens: 0 },
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,

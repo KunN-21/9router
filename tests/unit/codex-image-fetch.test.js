@@ -163,4 +163,25 @@ describe("CodexExecutor image handling", () => {
     const imgBlock = parsed.input[0].content.find((c) => c.type === "input_image");
     expect(imgBlock.image_url.startsWith("data:image/jpeg;base64,")).toBe(true);
   });
+
+  it("prefetches multiple images concurrently", async () => {
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    global.fetch = vi.fn(async () => {
+      concurrent++;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((r) => setTimeout(r, 50));
+      concurrent--;
+      return mockImageFetch(1024);
+    });
+    const executor = new CodexExecutor();
+    const body = {
+      input: [
+        { role: "user", content: [{ type: "image_url", image_url: { url: REMOTE_URL } }] },
+        { role: "user", content: [{ type: "image_url", image_url: { url: REMOTE_URL } }] },
+      ],
+    };
+    await executor.prefetchImages(body);
+    expect(maxConcurrent).toBeGreaterThan(1);
+  });
 });

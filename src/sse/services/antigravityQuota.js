@@ -116,14 +116,25 @@ async function _doRefresh(connectionId, accessToken, providerSpecificData, now) 
     const usage = await getAntigravityUsage(accessToken, providerSpecificData, proxyOptions);
     // 401/403 usage responses can contain an empty quotas object plus message.
     // Preserve known cache instead of replacing it with an upstream error response.
-    if (!usage?.quotas || usage.message) return null;
+    // An empty quotas map is also not a reset — never let it wipe known-good entries.
+    if (!usage?.quotas || usage.message || Object.keys(usage.quotas).length === 0) return null;
+
+    const previousQuotas = quotaCache.get(connectionId) ?? {};
+    const mergedQuotas = { ...usage.quotas };
+
+    // Never let a missing weekly response overwrite a known-good weekly cache entry.
+    for (const key of ["gemini_weekly", "claude_gpt_weekly"]) {
+      if (!mergedQuotas[key] && previousQuotas[key]) {
+        mergedQuotas[key] = previousQuotas[key];
+      }
+    }
 
     // Update in-memory cache. Caller logs CACHE_BLOCK only if requested model is exhausted.
     // Strike blocks are re-asserted after every refresh so an optimistic
     // upstream reading cannot resurrect a pair we just circuit-broke.
-    quotaCache.set(connectionId, applyActiveStrikeBlocks(connectionId, usage.quotas));
+    quotaCache.set(connectionId, applyActiveStrikeBlocks(connectionId, mergedQuotas));
 
-    return usage.quotas;
+    return mergedQuotas;
   } catch (e) {
     log.warn("AG_QUOTA", `${connectionId.slice(0, 8)} | refresh failed: ${e.message}`);
     return null;

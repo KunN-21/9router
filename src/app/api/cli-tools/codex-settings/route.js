@@ -1,7 +1,8 @@
-"use server";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { readExistingConfig } from "@/lib/cliTools/readExistingConfig";
+import { writeAtomic, assertSafePath } from "@/lib/cliTools/configFile";
 import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
@@ -149,7 +150,8 @@ export async function POST(request) {
 
     // Write merged config
     const configContent = stringifyTOML(parsed);
-    await fs.writeFile(configPath, configContent);
+    await assertSafePath(configPath, getCodexDir());
+    await writeAtomic(configPath, configContent);
 
     return NextResponse.json({
       success: true,
@@ -203,7 +205,8 @@ export async function DELETE() {
 
     // Write updated config
     const configContent = stringifyTOML(parsed);
-    await fs.writeFile(configPath, configContent);
+    await assertSafePath(configPath, getCodexDir());
+    await writeAtomic(configPath, configContent);
 
     // Remove OPENAI_API_KEY from auth.json
     const authPath = getCodexAuthPath();

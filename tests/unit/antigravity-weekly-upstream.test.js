@@ -427,8 +427,8 @@ describe("weekly quota isolation from existing quota", () => {
             models: {
               "gemini-3.8-flash-high": {
                 displayName: "Gemini 3.8 Flash (High)",
-                // Exhausted model: no remainingFraction, future resetTime
-                quotaInfo: { resetTime: "2026-09-13T12:00:00Z" },
+                // Cạn kiệt thật: remainingFraction bằng 0 kèm resetTime trong tương lai.
+                quotaInfo: { remainingFraction: 0, resetTime: "2026-09-13T12:00:00Z" },
               },
             },
           }),
@@ -458,14 +458,75 @@ describe("weekly quota isolation from existing quota", () => {
     const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
     const result = await getAntigravityUsage("token-reconcile", {});
 
-    // Per-model quota should show exhausted (0%)
-    expect(result.quotas["gemini-3.8-flash-high"].remainingPercentage).toBe(0);
-    // Weekly quota should NOT be pulled down to 0% — it keeps its genuine upstream weekly level
+    // Mô hình cạn kiệt thật giữ 0% cho 5h, Weekly giữ mức upstream thật.
+    expect(result.quotas["gemini-3.8-flash-high"]).toMatchObject({
+      used: 1000,
+      total: 1000,
+      remainingPercentage: 0,
+    });
     expect(result.quotas.gemini_weekly).toMatchObject({
       used: 0,
       total: 1000,
       remainingPercentage: 100,
       resetAt: "2026-09-15T00:00:00.000Z",
+    });
+  });
+
+  it("treats missing remainingFraction as unknown without pulling weekly down", async () => {
+    proxyAwareFetch.mockImplementation(async (url) => {
+      if (url.includes(":loadCodeAssist")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ cloudaicompanionProject: "p1", currentTier: { name: "Pro" }, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } }),
+        };
+      }
+      if (url.includes(":fetchAvailableModels")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: {
+              "gemini-3.8-flash-high": {
+                displayName: "Gemini 3.8 Flash (High)",
+                // Thiếu remainingFraction là unknown, không phải bằng chứng cạn kiệt.
+                quotaInfo: { resetTime: "2026-09-13T12:00:00Z" },
+              },
+            },
+          }),
+        };
+      }
+      if (url.includes(":retrieveUserQuotaSummary")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            groups: [{
+              displayName: "Gemini Models",
+              buckets: [{
+                bucketId: "gemini-weekly",
+                displayName: "Weekly Limit Remaining",
+                window: "weekly",
+                remainingFraction: 1,
+                resetTime: "2026-09-15T00:00:00Z",
+              }],
+            }],
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+
+    const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
+    const result = await getAntigravityUsage("token-unknown-fraction", {});
+
+    expect(result.quotas["gemini-3.8-flash-high"].remainingPercentage).toBeUndefined();
+    expect(result.quotas["gemini-3.8-flash-high"].used).toBeNull();
+    expect(result.quotas["gemini-3.8-flash-high"].total).toBeNull();
+    expect(result.quotas.gemini_weekly).toMatchObject({
+      used: 0,
+      total: 1000,
+      remainingPercentage: 100,
     });
   });
 });

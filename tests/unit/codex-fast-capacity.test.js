@@ -1,11 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
+import * as proxyFetchModule from "../../open-sse/utils/proxyFetch.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 function streamFromText(text) {
   const encoder = new TextEncoder();
   return new ReadableStream({
     start(controller) {
       controller.enqueue(encoder.encode(text));
+      controller.close();
+    },
+  });
+}
+
+function streamFromChunks(texts) {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const text of texts) controller.enqueue(encoder.encode(text));
       controller.close();
     },
   });
@@ -52,6 +65,18 @@ describe("Codex fast tier and capacity handling", () => {
     expect(peek.message).toBe("Selected model is at capacity. Please try a different model.");
   });
 
+  it("does not treat user output containing capacity text as fallback", async () => {
+    const executor = new CodexExecutor();
+    const response = new Response(streamFromText([
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"model_at_capacity is just text"}',
+      "",
+    ].join("\n")), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    expect(peek.accountFallback).toBe(false);
+  });
+
   it("reassembles normal SSE after peeking", async () => {
     const executor = new CodexExecutor();
     const text = [
@@ -67,6 +92,69 @@ describe("Codex fast tier and capacity handling", () => {
     const peek = await executor._peekSseTransientError(response);
     expect(peek.matched).toBeNull();
     await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("does not judge a capacity JSON half-frame split across chunks", async () => {
+    const executor = new CodexExecutor();
+    const full = [
+      "event: error",
+      'data: {"error":{"message":"Selected model is at capacity. Please try a different model."}}',
+      "",
+    ].join("\n");
+    // Split right after "capacity": chunk 1 holds the full pattern but no
+    // newline, so a half-frame judge would match on truncated text.
+    const splitAt = full.indexOf("capacity. Please") + "capacity".length;
+    const response = new Response(
+      streamFromChunks([full.slice(0, splitAt), full.slice(splitAt)]),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.accountFallback).toBe(true);
+    expect(peek.message).toBe("Selected model is at capacity. Please try a different model.");
+  });
+
+  it("replays a content delta split across chunks verbatim", async () => {
+    const executor = new CodexExecutor();
+    const text = [
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"OK"}',
+      "",
+    ].join("\n");
+    const splitAt = text.indexOf('"delta":"OK"') + '"delta":"O'.length;
+    const response = new Response(
+      streamFromChunks([text.slice(0, splitAt), text.slice(splitAt)]),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    expect(peek.accountFallback).toBe(false);
+    await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("skips codex SSE peek when caller requests combo peek", async () => {
+    const executor = new CodexExecutor();
+    let fetchCalls = 0;
+    vi.spyOn(proxyFetchModule, "proxyAwareFetch").mockImplementation(async () => {
+      fetchCalls++;
+      return new Response(streamFromText([
+        "event: response.output_text.delta",
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+        "",
+      ].join("\n")), { status: 200, headers: new Headers({ "Content-Type": "text/event-stream" }) });
+    });
+    const peekSpy = vi.spyOn(executor, "_peekSseTransientError");
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { model: "gpt-5.5", input: "hi" },
+      stream: true,
+      credentials: { accessToken: "test" },
+      skipSsePeek: true,
+    });
+    expect(fetchCalls).toBe(1);
+    expect(peekSpy).not.toHaveBeenCalled();
+    await expect(result.response.text()).resolves.toContain("OK");
   });
 });
 

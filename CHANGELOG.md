@@ -1,3 +1,30 @@
+# v0.5.91-local.1 (2026-10-05)
+
+## Integrated Features from Upstream v0.5.91
+- **CLI Tools**: Hỗ trợ cấu hình động và APIs thiết lập cho CLI tools (Pi, OMP, Crush, ForgeCode, Smelt, CodeWhale, Hermes, Codex); bổ sung UI components `BaseUrlSelect`, `ToolDetailClient`, `HermesToolCard`, `CodexToolCard`.
+- **Hermes**: Cấu hình model đa vai trò (delegation slot và auxiliary slots) cùng API thiết lập với cơ chế safe YAML scalar quoting và role whitelisting ngăn chặn injection.
+- **Codex Profiles**: Hỗ trợ nhiều profile cho Codex CLI qua tệp `name.config.toml`, quản lý profile với cơ chế bảo vệ path traversal và chống ghi đè tên profile dành riêng (`config`, `auth`).
+- **Zed**: Tự động import thông tin xác thực từ Zed IDE qua route `/api/oauth/zed/auto-import` được bảo vệ nghiêm ngặt bằng `LOCAL_ONLY_PATHS` (chỉ cho phép loopback) và `ALWAYS_PROTECTED` (yêu cầu CLI token), khắc phục lỗi crash paste-token.
+- **Docker Multi-Arch**: Bổ sung workflow xuất bản Docker multi-platform (`linux/amd64` và `linux/arm64`), hoàn thiện tài liệu hướng dẫn `DOCKER.md` và `Dockerfile`.
+- **Tray ARM64**: Tích hợp binary khay hệ thống (tray) native Apple Silicon ARM64 cho macOS (`hooks/trayRuntime.js`, `buildTrayArm64.js`, GitHub Actions build), xác thực SHA-256 mã hóa, không yêu cầu Rosetta 2.
+
+## Preserved Local Invariants & Fixes
+- **Antigravity Weekly Quota Isolation**: Bảo toàn tính độc lập của hạn ngạch Weekly từ Google Cloud Code `retrieveUserQuotaSummary`, loại bỏ hoàn toàn lỗi ép Weekly về 0% khi hạn ngạch 5h cạn kiệt.
+- **9Router Stream Protocol & Terminal Semantics**: Chuẩn hóa frame lỗi in-band, đóng SSE an toàn khi lỗi hoặc kết thúc stream, loại bỏ tình trạng đóng stream im lặng sau HTTP 200; duy trì Claude event watchdog (240s) và raw socket watchdog (360s).
+- **Combo Stream Timeout Classification**: Phân loại chính xác lỗi timeout trước khi có dữ liệu trả về HTTP 504 `gateway_timeout` / `server_error`, stream rỗng kết thúc giữ HTTP 503 `empty_stream`; reset trạng thái timeout giữa các lượt thử; bảo toàn tiêu đề `Retry-After`.
+- **Token Saver / RTK**: Đo lường byte UTF-8 chính xác bằng `Buffer.byteLength`, bảo vệ tuyệt đối các công cụ chỉnh sửa mã nguồn (`Read`, `Grep`, `Edit`, `Write`, `patch`, `anchor`), xử lý fail-open với công cụ không xác định, bỏ qua nén Headroom cho công cụ được bảo vệ.
+- **OpenCode Tool Quartet Fingerprinting**: Duy trì chuẩn hóa tên lowercase cho 4 công cụ (`bash`, `glob`, `grep`, `read`) và khôi phục tên trong phản hồi (PR #4142), đảm bảo giới hạn độ dài danh mục 64 ký tự và tương thích `tool_choice`.
+- **Responses & Codex Tool Argument Preservation**: Bảo toàn xử lý delta tham số tool call trên các tiền tố `call_id`/`item_id`/`fc_`, chuẩn hóa tên tool call theo regex an toàn và khôi phục tên tool đầy đủ trong phản hồi; bảo vệ luồng đệm Claude tool.
+- **Direct Claude Translators**: Bảo toàn các route dịch trực tiếp (`claude:gemini:gemini`, `claude:muse-spark:openai-responses`, `claude:gpt-family:openai-responses`) vượt qua tầng trung gian OpenAI tránh thất thoát thông tin.
+- **Old Changelog Preservation**: Giữ nguyên toàn bộ nội dung changelog local từ `v0.5.81-local.15` đến `v0.5.81-local.1` cùng các ghi chú phát hành upstream.
+
+# v0.5.81-local.15 (2026-10-04)
+
+- Combo stream timeout classification: pre-content timeout returns HTTP 504 with type server_error and code gateway_timeout (message provider timed out waiting for stream content); empty ended stream stays HTTP 503 with message provider returned an empty stream and carries no timeout type/code.
+- Explicit timeout state on Retry-After branch with existing headers/suffix kept; type/code and synthetic timeout state reset at each attempt start so prior-attempt metadata does not leak into later attempts.
+- Retry-After header, header/fallback/default timeout values, peek/timeout defaults/retry/model-order/fallback/abort/raw-byte replay unchanged; non-SSE JSON/audio/image keep original response and unread body.
+- Audited offline VM self-check: 21/21 cases pass (tests/verify-combo-stream-timeout.mjs); evidence at .claude/recovery/combo-stream-timeout-20261004/main-acceptance.md and main-offline-manifest.json. Not a full-suite run; no live incident or runtime claim. Upstream selective v0.5.91 (B8c/B9/final/B10) not complete in this release.
+
 # v0.5.81-local.11
 
 - Fix Antigravity Weekly quota isolation: loại bỏ logic ép Weekly về 0% khi các model 5h cạn kiệt, bảo toàn đúng quota Weekly độc lập trả về từ Google Cloud Code `retrieveUserQuotaSummary`.
@@ -43,6 +70,67 @@
 
 - Merge PR #4142 `fix(opencode): rename free-tier tool quartet so Claude Code CLI stops getting 403` (560bed3, yxxrn) — `opencodeFingerprint.js` rename quartet case-variants to lowercase, drop pure duplicates, retarget explicit `tool_choice`, restore on all three response paths via `WeakMap`; measured 43 caps tools 403→200, no lowercase leak.
 - Bump from 0.5.79-local.1 to 0.5.81-local.1 tracking upstream 23ae82d8 (v0.5.81) header.
+
+# v0.5.91 (2026-09-26)
+
+## Features
+- **Providers**: add Token Harbor provider and four OpenAI-compatible aggregator providers (dahl, atria, agnes, bai)
+- **Claude**: forward `x-claude-code-session-id` on OAuth requests; merge client `anthropic-beta` flags and forward rate-limit headers; return thinking text to OpenAI-format clients
+- **Codex**: add GPT-6 Sol and Luna support
+- **CLI Tools**: support multiple model profiles for Codex CLI
+- **Hermes**: multi-role model config (delegation + auxiliary slots)
+- **OpenCode Go**: complete the Go catalog (40 models) with auto-fetch + family endpoint regex
+- **Usage**: show and redeem free limit resets for cc accounts
+- **Cline**: expose the `cline-free/*` tier and price it at zero
+- **Combos**: display vision adapter models in an ordered table view
+
+## Fixes
+- **Claude**: decloak tool names when `toolNameMap` misses (#4342); update spoofed cli version to 2.1.280 to support Opus 5.5
+- **Providers API**: make POST `/api/providers` O(1) and refuse silent key overwrite (#4350)
+- **Capabilities**: stop caching the catalog source per module copy (#4351)
+- **OAuth**: stop Zed paste-token crash and add IDE auto-import (#4359)
+- **Dashboard**: resolve combo limits with the server's capabilities (#4360); lazy-load charts and `marked`, preload in background on idle
+- **Responses**: carry the streamed output items in `response.completed` (#4307)
+- **STT**: dispatch live-API-only Gemini models over the Live WebSocket transport (#4006)
+- **Gemini**: guard terminal model turns and unresponded functionCalls in `normalizeGeminiContents`
+- **Command Code**: replay raw byte chunks to preserve all NDJSON lines
+- **Translator**: stop emitting empty `<think>` markers into OpenAI content
+- **CLI Tools**: refresh Codex settings after apply (#4347); keep existing `ANTHROPIC_AUTH_TOKEN` when applying Claude settings
+- **Tray**: native arm64 macOS menubar binary, no Rosetta required
+- **CLI**: filter model selector by active connections and noAuth providers
+- **Usage**: key live byApiKey stats by full api key to prevent team-key collision and preserve API key usage attribution
+- **Tailscale**: cap enable-flow health wait at 20s
+
+# v0.5.86 (2026-09-23)
+
+## Features
+- **Xiaomi MiMo**: server-assisted desktop login for headless/Docker deployments, five account clusters (cn/sgp/ams/ru/in), and v2.6 pro/flash/pro-ultraspeed models with dual-route (account service vs. cloud API)
+- **Claude**: add Claude Opus 5.5 support
+- **i18n**: translate React text rewrites via characterData mutation observer
+
+## Fixes
+- **Proxy Pools**: keep request headers intact through Vercel/Cloudflare/Deno relays (spreading a `Headers` instance yielded `{}`, dropping auth and content-type)
+- **Xiaomi MiMo login**: keep the session in the httpOnly cookie only, require dashboard auth on the proxy branch, and stop forwarding authorization headers upstream
+
+# v0.5.85 (2026-09-22)
+
+## Features
+- **System One**: add `/v1/systemone` decision endpoint for Jev models (OpenCode Zen and OpenRouter lanes), wire into sidebar and Media Providers page with interactive probe testing
+- **CLI Tools**: add dynamic configuration, settings APIs, and official logos for Pi, OMP, Crush, ForgeCode, Smelt, and CodeWhale
+- **Analytics & Usage**: add Requests mode, provider/model breakdown charts, All Time period filter, and refined overview cards
+- **Combos**: add Cursor/Claude Default presets; support bulk select/delete and bulk strategy changes (Fallback / Round Robin / Fusion)
+- **Model Capabilities**: expose model capability metadata on `/v1/models` and aggregate capabilities across combo targets
+- **OpenCode Zen & MiMo**: add OpenCode Zen (`opencode-zen`) provider with free-tier fingerprint; switch default vision fallback to MiMo V2.6 Flash Free
+- **Qoder CN**: add `qoder-cn` provider for qoder.com.cn with OAuth flow, COSY protocol, and CN gateway routing
+
+## Fixes
+- **Translator**: map Claude `refusal` stop_reason to `content_filter` and surface explanation; strip replayed reasoning fields for Groq, Mistral, and Cerebras (#4220)
+- **Antigravity**: drop requestType `agent` to avoid false 429 `RESOURCE_EXHAUSTED`; separate weekly and short-window (5-hour) quotas and deduplicate dashboard rows
+- **Responses API**: report usage on `response.completed` so clients can auto-compact (#3432)
+- **Hugging Face**: migrate to Inference Providers router (`router.huggingface.co`), expand image models catalog, and add STT route
+- **Qoder**: prevent signed request replay (`403/103 Duplicate request`), handle code 110 billing blocks, and preserve upstream SSE error status
+- **Performance**: bound usage `lastUsed` scan to a 2-day window; map large budget tokens to `max` reasoning tier
+- **Docker**: publish verified multi-platform images (linux/amd64 and linux/arm64) with configurable apk build mirrors
 
 # v0.5.81 (2026-09-18)
 

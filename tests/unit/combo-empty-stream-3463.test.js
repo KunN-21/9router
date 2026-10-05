@@ -34,12 +34,14 @@ function jsonResponse(payload) {
 async function runCombo(responders, { models = ["p1/first", "p2/second"], consume = true, signal = null } = {}) {
   const attempted = [];
   const seenSignals = [];
+  const seenOpts = [];
   const response = await handleComboChat({
     body: { model: "combo", stream: true, messages: [{ role: "user", content: "hi" }] },
     models,
     handleSingleModel: async (_body, modelStr, opts) => {
       attempted.push(modelStr);
       seenSignals.push(opts?.signal ?? null);
+      seenOpts.push(opts ?? null);
       return responders[modelStr]();
     },
     log: silentLog,
@@ -47,7 +49,7 @@ async function runCombo(responders, { models = ["p1/first", "p2/second"], consum
     comboStrategy: "fallback",
     signal,
   });
-  return { attempted, seenSignals, response, text: consume ? await response.text() : null };
+  return { attempted, seenSignals, seenOpts, response, text: consume ? await response.text() : null };
 }
 
 describe("combo failover on empty-but-successful streams (#3463)", () => {
@@ -200,6 +202,29 @@ describe("combo failover on empty-but-successful streams (#3463)", () => {
       choices: [{ message: { content: "json answer" } }],
     });
   });
+
+  it("treats Responses reasoning delta and done frames as content", async () => {
+    const { attempted, text } = await runCombo({
+      "p1/first": () => sseResponse([
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}\n\n',
+      ]),
+      "p2/second": () => sseResponse(['data: {"choices":[{"delta":{"content":"must not run"}}]}\n\n']),
+    });
+
+    expect(attempted).toEqual(["p1/first"]);
+    expect(text).toContain("thinking");
+  });
+
+  it("treats reasoning output_item.done as content", async () => {
+    const { attempted } = await runCombo({
+      "p1/first": () => sseResponse([
+        'data: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"slow thought"}]}}\n\n',
+      ]),
+      "p2/second": () => sseResponse(['data: {"choices":[{"delta":{"content":"must not run"}}]}\n\n']),
+    });
+
+    expect(attempted).toEqual(["p1/first"]);
+  });
 });
 
 describe("combo empty-stream guard honors caller abort (#3463)", () => {
@@ -275,6 +300,15 @@ describe("combo empty-stream guard honors caller abort (#3463)", () => {
 
     expect(seenSignals).toEqual([controller.signal]);
   });
+
+  it("passes skipSsePeek through to each model attempt", async () => {
+    const controller = new AbortController();
+    const { seenOpts } = await runCombo(
+      { "p1/first": () => sseResponse(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n']) },
+      { models: ["p1/first"], signal: controller.signal },
+    );
+    expect(seenOpts.every((o) => o?.skipSsePeek === true)).toBe(true);
+  });
 });
 
 describe("combo empty-stream guard is time-bounded (#3463)", () => {
@@ -326,6 +360,52 @@ describe("combo empty-stream guard is time-bounded (#3463)", () => {
       expect(attempted).toEqual(["p1/hang", "p2/second"]);
       expect(await response.text()).toContain("rescued");
       expect(elapsed).toBeLessThan(3000);
+    } finally {
+      delete process.env.STREAM_FIRST_CHUNK_TIMEOUT_MS;
+      delete process.env.FETCH_CONNECT_TIMEOUT_MS;
+      vi.resetModules();
+    }
+  });
+
+  it("marks peek timeout distinctly from empty stream", async () => {
+    vi.resetModules();
+    process.env.STREAM_FIRST_CHUNK_TIMEOUT_MS = "150";
+    process.env.FETCH_CONNECT_TIMEOUT_MS = "150";
+    try {
+      const { handleComboChat: freshCombo } = await import("../../open-sse/services/combo.js");
+      let keepAliveTimer = null;
+      const neverEnding = new Response(
+        new ReadableStream({
+          start(controller) {
+            keepAliveTimer = setInterval(() => {
+              try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* closed */ }
+            }, 10);
+          },
+          cancel() { clearInterval(keepAliveTimer); },
+        }),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      );
+      const warns = [];
+      const captureLog = {
+        info() {},
+        warn(...args) { warns.push(args); },
+        error() {},
+        debug() {},
+      };
+      const response = await freshCombo({
+        body: { model: "combo", stream: true, messages: [{ role: "user", content: "hi" }] },
+        models: ["p1/hang", "p2/second"],
+        handleSingleModel: async (_body, modelStr) => {
+          if (modelStr === "p1/hang") return neverEnding;
+          return sseResponse(['data: {"choices":[{"delta":{"content":"rescued"}}]}\n\n']);
+        },
+        log: captureLog,
+        comboName: "combo",
+        comboStrategy: "fallback",
+      });
+      expect(await response.text()).toContain("rescued");
+      const timeoutWarn = warns.find((args) => String(args[1] ?? "").includes("timed out waiting for stream content"));
+      expect(timeoutWarn).toBeDefined();
     } finally {
       delete process.env.STREAM_FIRST_CHUNK_TIMEOUT_MS;
       delete process.env.FETCH_CONNECT_TIMEOUT_MS;

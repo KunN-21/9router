@@ -43,6 +43,15 @@ function formatResetTimeDisplay(resetTime) {
  * Get color classes based on remaining percentage
  */
 function getColorClasses(remainingPercentage) {
+  if (remainingPercentage === null || remainingPercentage === undefined || !Number.isFinite(remainingPercentage)) {
+    return {
+      text: "text-text-muted",
+      bg: "bg-gray-400 dark:bg-gray-600",
+      bgLight: "bg-gray-400/10 dark:bg-gray-600/10",
+      emoji: "⚪",
+    };
+  }
+
   if (remainingPercentage > 70) {
     return {
       text: "text-green-600 dark:text-green-400",
@@ -71,11 +80,11 @@ function getColorClasses(remainingPercentage) {
 
 function sortQuotas(quotas, sortMode) {
   if (sortMode === "remaining-asc") {
-    return [...quotas].sort((a, b) => a.remaining - b.remaining || a.name.localeCompare(b.name));
+    return [...quotas].sort((a, b) => (a.remaining ?? -1) - (b.remaining ?? -1) || a.name.localeCompare(b.name));
   }
 
   if (sortMode === "remaining-desc") {
-    return [...quotas].sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name));
+    return [...quotas].sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1) || a.name.localeCompare(b.name));
   }
 
   return quotas;
@@ -152,6 +161,7 @@ export default function QuotaTable({
         {currentPageRows.map((quota) => {
           const isUnlimited = quota.unlimited === true;
           const isCreditBalance = quota.isCreditBalance === true;
+          const isUnknown = !isCreditBalance && (quota.remaining === null || quota.remaining === undefined || !Number.isFinite(quota.remaining));
           const colors = isCreditBalance
             ? { text: "text-blue-600 dark:text-blue-400", bg: "bg-blue-500", bgLight: "bg-blue-500/10", emoji: "💰" }
             : getColorClasses(quota.remaining);
@@ -182,10 +192,12 @@ export default function QuotaTable({
                 <div className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
                   quota.remaining === 0 ? "border-black/10 dark:border-white/10" : "border-transparent"
                 }`}>
-                  <div
-                    className={`h-full transition-all duration-300 ${colors.bg}`}
-                    style={{ width: `${Math.min(quota.remaining, 100)}%` }}
-                  />
+                  {!isUnknown && (
+                    <div
+                      className={`h-full transition-all duration-300 ${colors.bg}`}
+                      style={{ width: `${Math.min(quota.remaining, 100)}%` }}
+                    />
+                  )}
                 </div>
                 )}
 
@@ -194,20 +206,24 @@ export default function QuotaTable({
                     className="text-text-muted truncate"
                     title={
                       isUnlimited
-                        ? `${quota.used.toLocaleString()} used · Unlimited`
+                        ? `${(quota.used ?? 0).toLocaleString()} used · Unlimited`
                         : isCreditBalance
                         ? `Credit balance: ${quota.total.toFixed(2)} ${quota.currency || ""}`
-                        : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`
+                        : isUnknown
+                        ? "—"
+                        : `${(quota.used ?? 0).toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`
                     }
                   >
                     {isUnlimited
-                      ? `${quota.used.toLocaleString()} used · Unlimited`
+                      ? `${(quota.used ?? 0).toLocaleString()} used · Unlimited`
                       : isCreditBalance
                       ? `Credit: ${quota.total.toFixed(2)} ${quota.currency || ""}`
-                      : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
+                      : isUnknown
+                      ? "—"
+                      : `${(quota.used ?? 0).toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
                   </span>
                   <span className={`font-medium ${isUnlimited ? "text-green-600 dark:text-green-400" : isCreditBalance ? "text-blue-600 dark:text-blue-400" : colors.text} shrink-0`}>
-                    {isUnlimited ? "Unlimited" : isCreditBalance ? "" : `${quota.remaining}%`}
+                    {isUnlimited ? "Unlimited" : isCreditBalance ? "" : isUnknown ? "—" : `${quota.remaining}%`}
                   </span>
                 </div>
               </div>

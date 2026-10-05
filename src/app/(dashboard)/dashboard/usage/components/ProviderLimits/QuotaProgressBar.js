@@ -5,6 +5,15 @@ import { formatResetTime } from "./utils";
 
 // Calculate color based on remaining percentage
 const getColorClasses = (remainingPercentage) => {
+  if (remainingPercentage === null || remainingPercentage === undefined || !Number.isFinite(remainingPercentage)) {
+    return {
+      text: "text-text-muted",
+      bg: "bg-gray-400 dark:bg-gray-600",
+      bgLight: "bg-gray-400/10 dark:bg-gray-600/10",
+      emoji: "⚪"
+    };
+  }
+
   if (remainingPercentage > 70) {
     return {
       text: "text-green-500",
@@ -13,7 +22,7 @@ const getColorClasses = (remainingPercentage) => {
       emoji: "🟢"
     };
   }
-  
+
   if (remainingPercentage >= 30) {
     return {
       text: "text-yellow-500",
@@ -22,7 +31,7 @@ const getColorClasses = (remainingPercentage) => {
       emoji: "🟡"
     };
   }
-  
+
   // 0-29% including 0% (out of quota) - show red
   return {
     text: "text-red-500",
@@ -72,6 +81,7 @@ export default function QuotaProgressBar({
   resetTime = null,
   recurring = true,
 }) {
+  const isUnknown = percentage === null || percentage === undefined || !Number.isFinite(percentage);
   const colors = getColorClasses(percentage);
   const countdown = formatResetTime(resetTime);
   const resetDisplay = formatResetTimeDisplay(resetTime);
@@ -82,7 +92,7 @@ export default function QuotaProgressBar({
 
   // percentage is already remaining percentage (from ProviderLimitCard)
   const remaining = percentage;
-  
+
   return (
     <div className="space-y-2">
       {/* Label and percentage */}
@@ -93,7 +103,7 @@ export default function QuotaProgressBar({
         <div className="flex items-center gap-1.5">
           <span className="text-xs">{colors.emoji}</span>
           <span className={cn("font-medium", colors.text)}>
-            {remaining}%
+            {isUnknown ? "—" : `${remaining}%`}
           </span>
         </div>
       </div>
@@ -101,17 +111,19 @@ export default function QuotaProgressBar({
       {/* Progress bar */}
       {!unlimited && (
         <div className={cn("h-2 rounded-full overflow-hidden", colors.bgLight)}>
-          <div
-            className={cn("h-full transition-all duration-300", colors.bg)}
-            style={{ width: `${Math.min(remaining, 100)}%` }}
-          />
+          {!isUnknown && (
+            <div
+              className={cn("h-full transition-all duration-300", colors.bg)}
+              style={{ width: `${Math.min(remaining, 100)}%` }}
+            />
+          )}
         </div>
       )}
 
       {/* Usage details and countdown */}
       <div className="flex items-center justify-between text-xs text-text-muted">
         <span>
-          {used.toLocaleString()} / {total.toLocaleString()} requests
+          {isUnknown ? "—" : `${(used ?? 0).toLocaleString()} / ${(total ?? 0).toLocaleString()} requests`}
         </span>
         {countdown !== "-" && (
           <div className="flex items-center gap-1">
