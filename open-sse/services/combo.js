@@ -732,7 +732,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr, { signal });
+      const result = await handleSingleModel(body, modelStr, { signal, skipSsePeek: true });
       if (signal?.aborted) {
         await result?.body?.cancel?.(signal?.reason).catch(() => {});
         lastError = signal?.reason?.message || "Request aborted";

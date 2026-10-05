@@ -34,12 +34,14 @@ function jsonResponse(payload) {
 async function runCombo(responders, { models = ["p1/first", "p2/second"], consume = true, signal = null } = {}) {
   const attempted = [];
   const seenSignals = [];
+  const seenOpts = [];
   const response = await handleComboChat({
     body: { model: "combo", stream: true, messages: [{ role: "user", content: "hi" }] },
     models,
     handleSingleModel: async (_body, modelStr, opts) => {
       attempted.push(modelStr);
       seenSignals.push(opts?.signal ?? null);
+      seenOpts.push(opts ?? null);
       return responders[modelStr]();
     },
     log: silentLog,
@@ -47,7 +49,7 @@ async function runCombo(responders, { models = ["p1/first", "p2/second"], consum
     comboStrategy: "fallback",
     signal,
   });
-  return { attempted, seenSignals, response, text: consume ? await response.text() : null };
+  return { attempted, seenSignals, seenOpts, response, text: consume ? await response.text() : null };
 }
 
 describe("combo failover on empty-but-successful streams (#3463)", () => {
@@ -297,6 +299,15 @@ describe("combo empty-stream guard honors caller abort (#3463)", () => {
     );
 
     expect(seenSignals).toEqual([controller.signal]);
+  });
+
+  it("passes skipSsePeek through to each model attempt", async () => {
+    const controller = new AbortController();
+    const { seenOpts } = await runCombo(
+      { "p1/first": () => sseResponse(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n']) },
+      { models: ["p1/first"], signal: controller.signal },
+    );
+    expect(seenOpts.every((o) => o?.skipSsePeek === true)).toBe(true);
   });
 });
 

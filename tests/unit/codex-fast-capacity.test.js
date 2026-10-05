@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
+import * as proxyFetchModule from "../../open-sse/utils/proxyFetch.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 function streamFromText(text) {
   const encoder = new TextEncoder();
@@ -67,6 +70,30 @@ describe("Codex fast tier and capacity handling", () => {
     const peek = await executor._peekSseTransientError(response);
     expect(peek.matched).toBeNull();
     await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("skips codex SSE peek when caller requests combo peek", async () => {
+    const executor = new CodexExecutor();
+    let fetchCalls = 0;
+    vi.spyOn(proxyFetchModule, "proxyAwareFetch").mockImplementation(async () => {
+      fetchCalls++;
+      return new Response(streamFromText([
+        "event: response.output_text.delta",
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+        "",
+      ].join("\n")), { status: 200, headers: new Headers({ "Content-Type": "text/event-stream" }) });
+    });
+    const peekSpy = vi.spyOn(executor, "_peekSseTransientError");
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { model: "gpt-5.5", input: "hi" },
+      stream: true,
+      credentials: { accessToken: "test" },
+      skipSsePeek: true,
+    });
+    expect(fetchCalls).toBe(1);
+    expect(peekSpy).not.toHaveBeenCalled();
+    await expect(result.response.text()).resolves.toContain("OK");
   });
 });
 

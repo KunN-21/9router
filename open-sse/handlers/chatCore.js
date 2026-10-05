@@ -62,7 +62,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, onTokenSaverEvent, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, onTokenSaverEvent, sourceFormatOverride, providerThinking, skipSsePeek }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -409,6 +409,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       providerSessionId: sessionSeed,
       clientTool,
       signal: streamController.signal,
+      skipSsePeek: skipSsePeek === true,
       log,
       proxyOptions,
     });
@@ -481,6 +482,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
             providerSessionId: sessionSeed,
             clientTool,
             signal: streamController.signal,
+            skipSsePeek: skipSsePeek === true,
             log,
             proxyOptions,
           });
