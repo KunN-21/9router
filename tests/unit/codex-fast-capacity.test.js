@@ -55,6 +55,18 @@ describe("Codex fast tier and capacity handling", () => {
     expect(peek.message).toBe("Selected model is at capacity. Please try a different model.");
   });
 
+  it("does not treat user output containing capacity text as fallback", async () => {
+    const executor = new CodexExecutor();
+    const response = new Response(streamFromText([
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"model_at_capacity is just text"}',
+      "",
+    ].join("\n")), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    expect(peek.accountFallback).toBe(false);
+  });
+
   it("reassembles normal SSE after peeking", async () => {
     const executor = new CodexExecutor();
     const text = [
