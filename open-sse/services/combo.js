@@ -27,8 +27,8 @@ const SSE_CONTENT_TYPE = "text/event-stream";
 const PEEK_MAX_BYTES = 256 * 1024;
 
 // Empty-stream peek bound. Shorter of the existing connect and first-chunk
-// timeouts, so a keepalive-only stream fails over fast. Both defaults are
-// <=60s; no new setting introduced. Streams that already carry content
+// timeouts, so a keepalive-only stream fails over fast. Defaults are 60s
+// connect and 200s first-chunk. Streams that already carry content
 // resolve on the first content frame, not on this bound.
 function peekTimeoutMs() {
   const candidates = [FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS]
@@ -744,7 +744,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // open an SSE stream, send nothing but keepalives and close cleanly; that
       // must fall through to the next model rather than be handed to the client.
       if (result.ok) {
-        const { hasContent, body: replayBody, aborted, error: streamError } = await peekStreamForContent(result, { signal });
+        const { hasContent, body: replayBody, aborted, timedOut, error: streamError } = await peekStreamForContent(result, { signal });
         if (aborted || signal?.aborted) {
           await replayBody?.cancel?.(signal?.reason).catch(() => {});
           lastError = signal?.reason?.message || "Request aborted";
@@ -791,7 +791,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
 
         lastError = "provider returned an empty stream";
         if (!lastStatus) lastStatus = 503;
-        log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`);
+        log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`, { timedOut });
         continue;
       }
 

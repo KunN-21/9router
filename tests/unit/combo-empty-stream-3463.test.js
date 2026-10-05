@@ -355,6 +355,53 @@ describe("combo empty-stream guard is time-bounded (#3463)", () => {
       vi.resetModules();
     }
   });
+
+  it("marks peek timeout distinctly from empty stream", async () => {
+    vi.resetModules();
+    process.env.STREAM_FIRST_CHUNK_TIMEOUT_MS = "150";
+    process.env.FETCH_CONNECT_TIMEOUT_MS = "150";
+    try {
+      const { handleComboChat: freshCombo } = await import("../../open-sse/services/combo.js");
+      let keepAliveTimer = null;
+      const neverEnding = new Response(
+        new ReadableStream({
+          start(controller) {
+            keepAliveTimer = setInterval(() => {
+              try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* closed */ }
+            }, 10);
+          },
+          cancel() { clearInterval(keepAliveTimer); },
+        }),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      );
+      const warns = [];
+      const captureLog = {
+        info() {},
+        warn(...args) { warns.push(args); },
+        error() {},
+        debug() {},
+      };
+      const response = await freshCombo({
+        body: { model: "combo", stream: true, messages: [{ role: "user", content: "hi" }] },
+        models: ["p1/hang", "p2/second"],
+        handleSingleModel: async (_body, modelStr) => {
+          if (modelStr === "p1/hang") return neverEnding;
+          return sseResponse(['data: {"choices":[{"delta":{"content":"rescued"}}]}\n\n']);
+        },
+        log: captureLog,
+        comboName: "combo",
+        comboStrategy: "fallback",
+      });
+      expect(await response.text()).toContain("rescued");
+      const emptyWarn = warns.find((args) => String(args[1] ?? "").includes("empty stream"));
+      expect(emptyWarn).toBeDefined();
+      expect(emptyWarn[2]).toMatchObject({ timedOut: true });
+    } finally {
+      delete process.env.STREAM_FIRST_CHUNK_TIMEOUT_MS;
+      delete process.env.FETCH_CONNECT_TIMEOUT_MS;
+      vi.resetModules();
+    }
+  });
 });
 
 describe("production chat caller threads the request signal into combo (#3463)", () => {
