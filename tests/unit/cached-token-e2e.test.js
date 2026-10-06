@@ -10,6 +10,7 @@ import { canonicalizeUsage } from "../../open-sse/utils/usageTracking.js";
 const originalDataDir = process.env.DATA_DIR;
 let tempDir;
 let db;
+let adapter;
 
 beforeAll(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-cached-e2e-"));
@@ -17,9 +18,11 @@ beforeAll(async () => {
   vi.resetModules();
   db = await import("@/lib/db/index.js");
   await db.initDb();
+  adapter = (await import("@/lib/db/driver.js")).getAdapterSync();
 });
 
 afterAll(() => {
+  adapter?.close();
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;

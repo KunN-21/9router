@@ -1,6 +1,7 @@
 import { FORMATS } from "../../translator/formats.js";
 import { ROLE, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP } from "../../translator/schema/index.js";
 import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
+import { responsesToClaudeUsage } from "../../translator/concerns/usage.js";
 
 export function parseToolArguments(value) {
   if (!value) return {};
@@ -204,9 +205,7 @@ export function responsesToClaudeMessage(responseBody) {
   }
   if (content.length === 0) content.push({ type: "text", text: "" });
 
-  const usage = responseBody.usage || {};
-  const cacheRead = usage.cache_read_input_tokens || usage.cached_tokens || 0;
-  const cacheCreate = usage.cache_creation_input_tokens || 0;
+  const usage = responsesToClaudeUsage(responseBody.usage || {});
   const mapped = responsesStatusToFinish(responseBody.status, responseBody.incomplete_details);
   // Truncation wins over tool presence — mirrors streaming translator (T7).
   const stopReason = mapped.stopReason === CLAUDE_STOP.MAX_TOKENS
@@ -221,11 +220,6 @@ export function responsesToClaudeMessage(responseBody) {
     content,
     stop_reason: stopReason,
     stop_sequence: null,
-    usage: {
-      input_tokens: usage.input_tokens || 0,
-      output_tokens: usage.output_tokens || 0,
-      ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
-      ...(cacheCreate > 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
-    },
+    usage,
   };
 }

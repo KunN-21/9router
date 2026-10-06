@@ -11,6 +11,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { CLAUDE_BLOCK, RESPONSES_ITEM, CLAUDE_STOP } from "../schema/index.js";
 import { sanitizeToolArgs } from "../concerns/toolArgs.js";
+import { responsesToClaudeUsage } from "../concerns/usage.js";
 import { CLAUDE_TOOL_PROGRESS_PING_INTERVAL_MS } from "../../config/runtimeConfig.js";
 import { SSE_PING_EVENT } from "../../utils/sseConstants.js";
 
@@ -49,6 +50,7 @@ export function responsesToClaudeResponse(chunk, state) {
     state.toolCalls = new Map(); // blockIndex -> { id, call_id, name, blockIndex, closed }
     state.toolArgBuffers = new Map(); // blockIndex -> string
     state.toolIndexByKey = new Map(); // item_id / call_id / output_index -> blockIndex
+    state.textPartsByItem = new Map();
     state.lastToolProgressPingAt = undefined;
 
     results.push({
@@ -66,8 +68,21 @@ export function responsesToClaudeResponse(chunk, state) {
     });
   }
 
+  let textParts;
+  if (eventType === "response.output_text.delta" ||
+      ((eventType === "response.output_item.added" || eventType === "response.output_item.done") && data.item?.type === RESPONSES_ITEM.MESSAGE)) {
+    const id = data.item?.id || data.item_id;
+    const indexKey = data.output_index !== undefined ? `idx_${data.output_index}` : null;
+    textParts = (id && state.textPartsByItem.get(id)) ||
+      (indexKey && state.textPartsByItem.get(indexKey)) ||
+      (!id && !indexKey && state.currentTextParts) || new Map();
+    if (id) state.textPartsByItem.set(id, textParts);
+    if (indexKey) state.textPartsByItem.set(indexKey, textParts);
+    state.currentTextParts = textParts;
+  }
+
   // Thinking delta
-  if (eventType === "response.reasoning_summary_text.delta" || eventType === "response.reasoning.delta") {
+  if (eventType === "response.reasoning_summary_text.delta" || eventType === "response.reasoning_text.delta" || eventType === "response.reasoning.delta") {
     const delta = data.delta || "";
     if (delta) {
       stopTextBlock(state, results);
@@ -89,26 +104,45 @@ export function responsesToClaudeResponse(chunk, state) {
     return results.length > 0 ? results : null;
   }
 
+  const emitTextDelta = (delta) => {
+    if (typeof delta !== "string" || !delta) return;
+    stopThinkingBlock(state, results);
+    if (!state.textBlockStarted) {
+      state.textBlockIndex = state.nextBlockIndex++;
+      state.textBlockStarted = true;
+      state.textBlockClosed = false;
+      results.push({
+        type: "content_block_start",
+        index: state.textBlockIndex,
+        content_block: { type: CLAUDE_BLOCK.TEXT, text: "" },
+      });
+    }
+    results.push({
+      type: "content_block_delta",
+      index: state.textBlockIndex,
+      delta: { type: "text_delta", text: delta },
+    });
+  };
+
   // Text delta
   if (eventType === "response.output_text.delta") {
     const delta = data.delta || "";
-    if (delta) {
-      stopThinkingBlock(state, results);
-      if (!state.textBlockStarted) {
-        state.textBlockIndex = state.nextBlockIndex++;
-        state.textBlockStarted = true;
-        state.textBlockClosed = false;
-        results.push({
-          type: "content_block_start",
-          index: state.textBlockIndex,
-          content_block: { type: "text", text: "" },
-        });
-      }
-      results.push({
-        type: "content_block_delta",
-        index: state.textBlockIndex,
-        delta: { type: "text_delta", text: delta },
-      });
+    if (typeof delta === "string" && delta) {
+      const partIndex = data.content_index ?? 0;
+      textParts.set(partIndex, (textParts.get(partIndex) || "") + delta);
+      emitTextDelta(delta);
+    }
+    return results.length > 0 ? results : null;
+  }
+
+  // Complete message items may contain text that never arrived as deltas.
+  if (eventType === "response.output_item.done" && data.item?.type === RESPONSES_ITEM.MESSAGE) {
+    for (const [partIndex, part] of (data.item.content || []).entries()) {
+      if (part?.type !== RESPONSES_ITEM.OUTPUT_TEXT || typeof part.text !== "string") continue;
+      const emitted = textParts.get(partIndex) || "";
+      if (!part.text.startsWith(emitted)) continue;
+      emitTextDelta(part.text.slice(emitted.length));
+      textParts.set(partIndex, part.text);
     }
     return results.length > 0 ? results : null;
   }
@@ -261,18 +295,9 @@ export function responsesToClaudeResponse(chunk, state) {
     // Extract usage
     const responseUsage = data.response?.usage || data.usage;
     if (responseUsage && typeof responseUsage === "object") {
-      const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;
-      const outputTokens = responseUsage.output_tokens || responseUsage.completion_tokens || 0;
-      const cacheRead = responseUsage.input_tokens_details?.cached_tokens || responseUsage.cache_read_input_tokens || 0;
-      const cacheCreate = responseUsage.input_tokens_details?.cache_creation_tokens || responseUsage.cache_creation_input_tokens || 0;
       const reasoningTokens = responseUsage.output_tokens_details?.reasoning_tokens || responseUsage.completion_tokens_details?.reasoning_tokens || responseUsage.reasoning_tokens || 0;
 
-      state.usage = {
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        ...(cacheRead ? { cache_read_input_tokens: cacheRead } : {}),
-        ...(cacheCreate ? { cache_creation_input_tokens: cacheCreate } : {}),
-      };
+      state.usage = responsesToClaudeUsage(responseUsage);
       if (reasoningTokens > 0) {
         state.reasoningTokens = reasoningTokens;
       }

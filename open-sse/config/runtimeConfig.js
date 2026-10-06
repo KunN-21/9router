@@ -60,6 +60,12 @@ export const CLAUDE_STREAM_STALL_TIMEOUT_MS = envMs("CLAUDE_STREAM_STALL_TIMEOUT
 // to reset the downstream client watchdog. Fixed, not env-tunable (watchdog is fixed).
 export const CLAUDE_TOOL_PROGRESS_PING_INTERVAL_MS = 15 * 1000;
 
+// Downstream keep-alive cadence: SSE comment bytes emitted while the transform
+// output is silent (e.g. long upstream reasoning with no deltas) so a downstream
+// client byte-watchdog sees wire activity. Comments carry no semantics and never
+// reset the upstream stall timer. Env: STREAM_KEEPALIVE_INTERVAL_MS.
+export const STREAM_KEEPALIVE_INTERVAL_MS = envMs("STREAM_KEEPALIVE_INTERVAL_MS", 15 * 1000);
+
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
