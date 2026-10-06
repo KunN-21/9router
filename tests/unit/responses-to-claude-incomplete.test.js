@@ -191,8 +191,8 @@ describe("Responses API → Claude: incomplete status to max_tokens and Anthropi
     expect(delta).toBeDefined();
     expect(delta.usage).toBeDefined();
 
-    // Anthropic schema: input_tokens, output_tokens, cache_read_input_tokens
-    expect(delta.usage.input_tokens).toBe(200);
+    // Exclusive Claude schema: cached input is reported separately from input_tokens.
+    expect(delta.usage.input_tokens).toBe(150);
     expect(delta.usage.output_tokens).toBe(150);
     expect(delta.usage.cache_read_input_tokens).toBe(50);
 

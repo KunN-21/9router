@@ -1,11 +1,15 @@
 // Stream handler with disconnect detection - shared for all providers
-import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { STREAM_STALL_TIMEOUT_MS, STREAM_KEEPALIVE_INTERVAL_MS } from "../config/runtimeConfig.js";
+import { SSE_KEEPALIVE_COMMENT } from "./sseConstants.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
+
+// Shared keep-alive bytes (constant SSE comment, safe to reuse across streams).
+const keepaliveBytes = new TextEncoder().encode(SSE_KEEPALIVE_COMMENT);
 
 /**
  * Create stream controller with abort and disconnect detection
@@ -98,10 +102,13 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  *
  * @param {function} [onAbortTerminal] - Receives a human-readable abort
  * message and returns terminal SSE bytes to emit downstream.
+ * @param {number} [keepAliveIntervalMs] - Emit an SSE comment downstream when the
+ * transform output is silent this long. Wire bytes only; never resets upstream stall.
  */
-export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null) {
+export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, keepAliveIntervalMs = STREAM_KEEPALIVE_INTERVAL_MS) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
+  const keepAliveMs = Number(keepAliveIntervalMs);
   let terminalEmitted = false;
 
   // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
@@ -126,10 +133,36 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     }
   });
 
+  // One pull at a time: a new pull only starts after the previous Promise.race
+  // settles, so a single outer timer slot is safe (no overwrite leak). The
+  // finally below always clears it, including on upstream error/abort paths.
+  let keepAliveTimer = null;
+  const clearKeepAliveTimer = () => {
+    if (keepAliveTimer) { clearTimeout(keepAliveTimer); keepAliveTimer = null; }
+  };
+
   const cleanup = () => {
     if (abortListener && typeof streamController.signal?.removeEventListener === "function") {
       streamController.signal.removeEventListener("abort", abortListener);
       abortListener = null;
+    }
+    clearKeepAliveTimer();
+  };
+
+  // Single outstanding transform read shared across pulls. A keep-alive timeout
+  // may win the race while the read is still pending — the same promise is then
+  // re-awaited on the next pull so the chunk is never dropped.
+  let pendingRead = null;
+  const getPendingRead = () => {
+    if (!pendingRead) {
+      pendingRead = reader.read();
+    }
+    return pendingRead;
+  };
+  const dropPendingRead = () => {
+    if (pendingRead) {
+      pendingRead.catch(() => {});
+      pendingRead = null;
     }
   };
 
@@ -137,6 +170,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     async pull(controller) {
       if (!streamController.isConnected() || streamController.signal?.aborted) {
         cleanup();
+        dropPendingRead();
         reader.cancel().catch(() => {});
         writer.abort().catch(() => {});
         emitTerminal(controller);
@@ -145,13 +179,40 @@ export function createDisconnectAwareStream(transformStream, streamController, o
       }
 
       try {
-        const readResult = await Promise.race([
-          reader.read(),
-          abortPromise
-        ]);
+        let readResult;
+        try {
+          if (Number.isFinite(keepAliveMs) && keepAliveMs > 0) {
+            const keepAlivePromise = new Promise((resolve) => {
+              keepAliveTimer = setTimeout(() => resolve({ keepAlive: true }), keepAliveMs);
+              if (keepAliveTimer.unref) keepAliveTimer.unref();
+            });
+            readResult = await Promise.race([getPendingRead(), abortPromise, keepAlivePromise]);
+          } else {
+            readResult = await Promise.race([getPendingRead(), abortPromise]);
+          }
+        } finally {
+          clearKeepAliveTimer();
+        }
+
+        if (readResult?.keepAlive) {
+          // Transform output silent for one interval: wire bytes only. Upstream
+          // stall timing is untouched (measured on raw upstream bytes elsewhere).
+          if (!streamController.isConnected() || streamController.signal?.aborted) {
+            cleanup();
+            dropPendingRead();
+            reader.cancel().catch(() => {});
+            writer.abort().catch(() => {});
+            emitTerminal(controller);
+            try { controller.close(); } catch {}
+            return;
+          }
+          try { controller.enqueue(keepaliveBytes); } catch { /* downstream closed */ }
+          return;
+        }
 
         if (readResult?.aborted || !streamController.isConnected()) {
           cleanup();
+          dropPendingRead();
           reader.cancel().catch(() => {});
           writer.abort().catch(() => {});
           emitTerminal(controller);
@@ -163,13 +224,16 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
         if (done) {
           cleanup();
+          dropPendingRead();
           streamController.handleComplete();
           controller.close();
           return;
         }
         controller.enqueue(value);
+        dropPendingRead();
       } catch (error) {
         cleanup();
+        dropPendingRead();
         const wasConnected = streamController.isConnected();
         // Controller already closed = downstream ended; not an upstream error, skip noisy log.
         const msg0 = error?.message || "";
@@ -208,6 +272,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
     cancel(reason) {
       cleanup();
+      dropPendingRead();
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel().catch(() => {});
       writer.abort().catch(() => {});

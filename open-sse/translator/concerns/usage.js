@@ -15,6 +15,23 @@ export function buildUsage({ promptTokens, completionTokens, totalTokens, cached
 
 const n = (v) => (typeof v === "number" ? v : 0);
 
+// Responses input counts include cache; legacy Claude-shaped counters do not.
+export function responsesToClaudeUsage(raw = {}) {
+  const count = (value) => Number.isFinite(value) ? Math.max(0, value) : 0;
+  const input = count(raw.input_tokens ?? raw.prompt_tokens);
+  const output = count(raw.output_tokens ?? raw.completion_tokens);
+  const cacheRead = count(raw.input_tokens_details?.cached_tokens ?? raw.cached_tokens ?? raw.cache_read_input_tokens);
+  const cacheCreate = count(raw.input_tokens_details?.cache_write_tokens ?? raw.input_tokens_details?.cache_creation_tokens ?? raw.cache_creation_input_tokens);
+  const exclusive = raw.input_tokens_details === undefined && raw.cached_tokens === undefined &&
+    (raw.cache_read_input_tokens !== undefined || raw.cache_creation_input_tokens !== undefined);
+  return {
+    input_tokens: exclusive ? input : Math.max(0, input - cacheRead - cacheCreate),
+    output_tokens: output,
+    ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
+    ...(cacheCreate > 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
+  };
+}
+
 // Per-provider raw token field-map + math. Returns buildUsage() args (NOT the usage object).
 // Keeps each provider's exact semantics: claude/gemini fold cache+reasoning, others don't.
 const USAGE_EXTRACTORS = {

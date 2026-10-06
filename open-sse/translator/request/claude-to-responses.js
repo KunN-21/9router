@@ -94,10 +94,10 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
         result.input.push({
           type: RESPONSES_ITEM.MESSAGE,
           role,
-          content: textParts.splice(0).map((text) => ({
+          content: textParts.splice(0).map((text) => typeof text === "string" ? ({
             type: role === ROLE.ASSISTANT ? RESPONSES_ITEM.OUTPUT_TEXT : RESPONSES_ITEM.INPUT_TEXT,
             text,
-          })),
+          }) : text),
         });
       };
 
@@ -140,8 +140,7 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
           block.source?.type === "base64" &&
           block.source?.data
         ) {
-          flushText(ROLE.USER);
-          result.input.push({
+          textParts.push({
             type: RESPONSES_ITEM.INPUT_IMAGE,
             image_url: encodeDataUri(block.source.media_type, block.source.data),
             detail: "auto",
@@ -173,8 +172,8 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
       const choice = src.tool_choice;
       if (typeof choice === "string") {
         result.tool_choice = choice;
-      } else if (choice.type === "auto") {
-        result.tool_choice = "auto";
+      } else if (choice.type === "auto" || choice.type === "none") {
+        result.tool_choice = choice.type;
       } else if (choice.type === "any") {
         result.tool_choice = "required";
       } else if (choice.type === "tool" && choice.name) {

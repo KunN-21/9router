@@ -298,12 +298,15 @@ describe("continuous-reader pipeline and actual termination paths", () => {
   };
 
   function splitFrames(text) {
-    return text.split("\n\n").filter((f) => f.trim()).map((raw) => {
+    return text.split("\n\n").filter((f) => f.trim()).flatMap((raw) => {
       const lines = raw.split("\n");
+      // Downstream keep-alive is a bare SSE comment (": ping") with no data line.
+      // It carries no semantics — skip it so frame parsing sees only real events.
+      if (!lines.some((l) => l.startsWith("data:"))) return [];
       const payload = lines.find((l) => l.startsWith("data:"))?.slice(5).trim();
       const event = lines.find((l) => l.startsWith("event:"))?.slice(6).trim() || null;
       // Parsing failures are test failures; [DONE] is the sole non-JSON payload.
-      return { event, data: payload === "[DONE]" ? "[DONE]" : JSON.parse(payload), raw };
+      return [{ event, data: payload === "[DONE]" ? "[DONE]" : JSON.parse(payload), raw }];
     });
   }
 

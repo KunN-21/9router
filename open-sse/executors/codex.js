@@ -18,10 +18,11 @@ import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 const CODEX_SSE_RETRY_PATTERNS = ["server_is_overloaded", "service_unavailable_error"];
 const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "model_at_capacity"];
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
-  "event: response.output_text.delta",
-  "event: response.function_call_arguments.delta",
-  '"type":"response.output_text.delta"',
-  '"type":"response.function_call_arguments.delta"',
+  "response.output_text.delta",
+  "response.function_call_arguments.delta",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_text.delta",
+  "response.reasoning.delta",
 ];
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
@@ -86,7 +87,14 @@ function matchCodexSseDataLine(line) {
 }
 
 function isCodexUserOutputLine(line) {
-  return CODEX_SSE_USER_OUTPUT_PATTERNS.some(p => line.toLowerCase().includes(p));
+  if (line.startsWith("event:")) {
+    return CODEX_SSE_USER_OUTPUT_PATTERNS.includes(line.slice(6).trim());
+  }
+  try {
+    return CODEX_SSE_USER_OUTPUT_PATTERNS.includes(JSON.parse(line.slice(5).trim())?.type);
+  } catch {
+    return false;
+  }
 }
 
 // Classify one complete SSE line: { kind: "error", matched, accountFallback },

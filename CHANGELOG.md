@@ -1,3 +1,12 @@
+# v0.5.91-local.3 (2026-10-06)
+
+- Codex → Claude compatibility: preserve real stream chunks when keepalive wins the pending-read race; treat Codex reasoning deltas as peek progress.
+- Response translation: forward `response.reasoning_text.delta` as Claude thinking; emit complete text from `response.output_item.done` without duplicates.
+- Request translation: nest base64 images inside Responses `message.content[]` with order preserved; preserve `tool_choice: none`.
+- Usage: Codex inclusive input converted to Claude exclusive input with cache fields preserved; consistent across stream, non-stream, forced SSE-to-JSON, and persisted usage.
+- Mock/synthetic gate including packaging tests: 22/22 suites, 254/254 tests passed; ESLint 0 errors, 0 warnings; `git diff --check` clean. No live provider verification.
+- Policy unchanged: client event watchdog 240s, upstream stall 360s, keepalive 15s. Codex still rejects `max_output_tokens`; no upstream output limiter added.
+
 # v0.5.91-local.1 (2026-10-05)
 
 ## Integrated Features from Upstream v0.5.91
