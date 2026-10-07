@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { handleComboChat, resetComboRotation } from "../../open-sse/services/combo.js";
-import { FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../../open-sse/config/runtimeConfig.js";
+import { STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../../open-sse/config/runtimeConfig.js";
 
 const encoder = new TextEncoder();
 const silentLog = { info() {}, warn() {}, error() {}, debug() {} };
@@ -316,8 +316,8 @@ describe("combo empty-stream guard is time-bounded (#3463)", () => {
     resetComboRotation();
   });
 
-  it("uses a default bound at or below 60s (shorter of existing timeouts, no new setting)", () => {
-    expect(Math.min(FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS)).toBeLessThanOrEqual(60 * 1000);
+  it("uses the first-content bound after headers (no new setting)", () => {
+    expect(STREAM_FIRST_CHUNK_TIMEOUT_MS).toBe(200 * 1000);
   });
 
   it("gives up on a keepalive-only stream instead of blocking forever", async () => {

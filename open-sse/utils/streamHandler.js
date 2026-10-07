@@ -11,6 +11,33 @@ function getTimeString() {
 // Shared keep-alive bytes (constant SSE comment, safe to reuse across streams).
 const keepaliveBytes = new TextEncoder().encode(SSE_KEEPALIVE_COMMENT);
 
+// Only short single-line identifiers reach the ERROR line: letters, digits,
+// and . _ - separators, capped at 64 chars. Anything else is dropped rather
+// than serialized, so secrets in messages/sockets/headers never leak.
+const SAFE_CAUSE_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function safeCauseToken(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) return null;
+  const capped = trimmed.slice(0, 64);
+  if (!SAFE_CAUSE_TOKEN_RE.test(capped)) return null;
+  return capped;
+}
+
+// " [causeName/causeCode]": cause.code first, then error.code, cause.name last.
+// One level only; cause.message, sockets, and nested objects never serialize.
+function formatSafeCauseSuffix(error) {
+  if (!error || typeof error !== "object") return "";
+  const cause = error.cause;
+  const causeCode = cause && typeof cause === "object" ? safeCauseToken(cause.code) : null;
+  const errorCode = safeCauseToken(error.code);
+  const causeName = cause && typeof cause === "object" ? safeCauseToken(cause.name) : null;
+  const parts = [causeCode || errorCode, causeName].filter(Boolean);
+  if (parts.length === 0) return "";
+  return ` [${parts.join("/")}]`;
+}
+
 /**
  * Create stream controller with abort and disconnect detection
  * @param {object} options
@@ -78,12 +105,15 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
         abortTimeout = null;
       }
 
-      if (error.name === "AbortError") {
+      if (error?.name === "AbortError") {
         logStream("⚡", "ABORTED");
         return;
       }
 
-      logStream("✗", `ERROR: ${error.message}${error.stack ? `\n    ${error.stack}` : ""}`, true);
+      // Transport cause stays diagnostic-only: append one level of safe
+      // cause name/code identifiers, never cause.message or socket bodies.
+      const causeSuffix = formatSafeCauseSuffix(error);
+      logStream("✗", `ERROR: ${error?.message}${causeSuffix}${error?.stack ? `\n    ${error.stack}` : ""}`, true);
       onError?.(error);
     },
 

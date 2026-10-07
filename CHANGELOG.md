@@ -1,3 +1,11 @@
+# v0.5.91-local.4 (2026-10-07)
+
+- Bảo toàn và khử trùng lặp reasoning: xử lý đầy đủ các sự kiện done-only cho reasoning (`response.reasoning_text.done`, `response.reasoning_summary_text.done`, `response.output_item.done`), tự động dedupe và validate phần bù nội dung đối với các delta đã stream trước đó.
+- Ngân sách timeout nội dung đầu tiên sau header: áp dụng trực tiếp `STREAM_FIRST_CHUNK_TIMEOUT_MS` (200s) cho post-header content peek thay vì giới hạn ngắn nhất `min(connect, first-chunk)` (60s), tránh timeout sớm khi upstream phản hồi chậm sau kết nối.
+- Safe transport causes: ghi nhận mã lỗi/tên nguyên nhân vận chuyển (transport cause) an toàn trong nhật ký luồng qua token định danh rút gọn (tối đa 64 ký tự), tuyệt đối không serialize message chi tiết, socket object hay dữ liệu nhạy cảm.
+- Bảo toàn chính sách watchdog và keepalive hiện tại: giữ nguyên client event watchdog 240s, upstream stall watchdog 360s, keepalive ping 15s; không đưa ra cam kết trạng thái live provider.
+- Mock/synthetic gate bao gồm packaging tests: 16/16 suites, 251/251 tests passed; ESLint 0 errors, 0 warnings; `git diff --check` clean. Không kiểm thử trực tiếp trên live provider.
+
 # v0.5.91-local.3 (2026-10-06)
 
 - Codex → Claude compatibility: preserve real stream chunks when keepalive wins the pending-read race; treat Codex reasoning deltas as peek progress.

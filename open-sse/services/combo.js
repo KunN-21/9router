@@ -5,7 +5,7 @@
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse, clientStatusForBreakerOpen } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
-import { FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
+import { STREAM_FIRST_CHUNK_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
 import { ERROR_TYPES } from "../config/errorConfig.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 
@@ -27,16 +27,13 @@ const SSE_CONTENT_TYPE = "text/event-stream";
 // passes the stream through. 256 KiB is far above any real preamble.
 const PEEK_MAX_BYTES = 256 * 1024;
 
-// Empty-stream peek bound. Shorter of the existing connect and first-chunk
-// timeouts, so a keepalive-only stream fails over fast. Both defaults are
-// <=60s; no new setting introduced. Streams that already carry content
-// resolve on the first content frame, not on this bound.
+// Empty-stream peek bound. Post-header content wait uses the first-content
+// constant directly: the connect timer is cleared when headers arrive, so it
+// never fires against the body wait.
+// No new setting introduced. Streams that already carry content resolve on
+// the first content frame, not on this bound.
 function peekTimeoutMs() {
-  const candidates = [FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS]
-    .map((n) => Number(n))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (candidates.length === 0) return 60 * 1000;
-  return Math.min(...candidates);
+  return STREAM_FIRST_CHUNK_TIMEOUT_MS;
 }
 
 // Map error code or type to a standard HTTP status code
@@ -180,9 +177,12 @@ function frameCarriesContent(line) {
   if (parsed.type === "content_block_start" && parsed.content_block?.type === "tool_use") return true;
 
   // OpenAI Responses API: output_text/function-call argument deltas, done text, item done, or completed output.
+  // Complete payloads also count: reasoning text done, reasoning summary done,
+  // reasoning item done (summary text or item.text fallback), message item done.
   if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
   if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
   if (parsed.type === "response.reasoning_summary_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.reasoning_text.done" && nonEmptyString(parsed.text)) return true;
   if (parsed.type === "response.output_item.done" && parsed.item?.type === "reasoning") {
     const summary = parsed.item.summary;
     if (Array.isArray(summary) && summary.some((p) => nonEmptyString(p?.text))) return true;

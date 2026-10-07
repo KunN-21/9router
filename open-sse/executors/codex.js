@@ -9,7 +9,7 @@ import { normalizeResponsesInput, sanitizeResponsesToolName } from "../translato
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId, getProviderModels } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
-import { DEFAULT_RETRY_CONFIG, FETCH_CONNECT_TIMEOUT_MS, HTTP_STATUS, STREAM_FIRST_CHUNK_TIMEOUT_MS, resolveRetryEntry } from "../config/runtimeConfig.js";
+import { DEFAULT_RETRY_CONFIG, HTTP_STATUS, STREAM_FIRST_CHUNK_TIMEOUT_MS, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
@@ -27,14 +27,11 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
 
-// Single-model peek bound. Mirrors combo peekStreamForContent: shorter of the
-// existing connect and first-chunk timeouts so a stalled body fails fast.
+// Single-model peek bound. Post-header content wait uses the first-content
+// constant directly: the connect timer is cleared when headers arrive, so it
+// never fires against the body wait.
 function codexPeekTimeoutMs() {
-  const candidates = [FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS]
-    .map((n) => Number(n))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (candidates.length === 0) return 60 * 1000;
-  return Math.min(...candidates);
+  return STREAM_FIRST_CHUNK_TIMEOUT_MS;
 }
 
 // Match capacity/retry patterns against error/capacity fields only — never
@@ -86,15 +83,51 @@ function matchCodexSseDataLine(line) {
   return matchCodexSseErrorJson(parsed);
 }
 
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+// Complete payloads carry generated text without a prior delta: reasoning
+// text/summary done, reasoning or message item done, output_text done.
+function isCodexCompleteContentJson(parsed) {
+  if (!parsed || typeof parsed !== "object") return false;
+  if (parsed.type === "response.reasoning_text.done" || parsed.type === "response.reasoning_summary_text.done") {
+    return isNonEmptyString(parsed.text);
+  }
+  if (parsed.type === "response.output_text.done") {
+    return isNonEmptyString(parsed.text);
+  }
+  if (parsed.type === "response.output_item.done") {
+    const item = parsed.item;
+    if (item?.type === "reasoning") {
+      if (Array.isArray(item.summary) && item.summary.some((part) => isNonEmptyString(part?.text))) return true;
+      return isNonEmptyString(item.text);
+    }
+    if (item?.type === "message") {
+      if (Array.isArray(item.content) && item.content.some((part) => isNonEmptyString(part?.text))) return true;
+      return isNonEmptyString(item.text);
+    }
+    return false;
+  }
+  return false;
+}
+
 function isCodexUserOutputLine(line) {
   if (line.startsWith("event:")) {
     return CODEX_SSE_USER_OUTPUT_PATTERNS.includes(line.slice(6).trim());
   }
+  let parsed = null;
   try {
-    return CODEX_SSE_USER_OUTPUT_PATTERNS.includes(JSON.parse(line.slice(5).trim())?.type);
+    parsed = JSON.parse(line.slice(5).trim());
   } catch {
     return false;
   }
+  if (!parsed || typeof parsed !== "object") return false;
+  // Error gate runs first: a structured error/capacity frame is never content,
+  // even when it also carries generated text.
+  if (matchCodexSseErrorJson(parsed)) return false;
+  if (CODEX_SSE_USER_OUTPUT_PATTERNS.includes(parsed?.type)) return true;
+  return isCodexCompleteContentJson(parsed);
 }
 
 // Classify one complete SSE line: { kind: "error", matched, accountFallback },

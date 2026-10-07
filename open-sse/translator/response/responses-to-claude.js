@@ -34,6 +34,44 @@ function restoreToolName(state, name) {
   return map && typeof map.get === "function" && map.has(raw) ? map.get(raw) : raw;
 }
 
+function emitThinkingDelta(state, results, delta) {
+  if (typeof delta !== "string" || !delta) return;
+  stopTextBlock(state, results);
+  if (!state.thinkingBlockStarted) {
+    state.thinkingBlockIndex = state.nextBlockIndex++;
+    state.thinkingBlockStarted = true;
+    results.push({
+      type: "content_block_start",
+      index: state.thinkingBlockIndex,
+      content_block: { type: "thinking", thinking: "" },
+    });
+  }
+  results.push({
+    type: "content_block_delta",
+    index: state.thinkingBlockIndex,
+    delta: { type: "thinking_delta", thinking: delta },
+  });
+}
+
+// Thinking buffers keyed by item/output-index alias + channel + part, so a
+// complete payload dedupes against streamed deltas instead of replaying them.
+function resolveThinkingEntry(state, id, indexKey, channel, part) {
+  state.thinkingPartsByItem ??= new Map();
+  const suffix = `${channel}|${part}`;
+  const keys = [];
+  if (id) keys.push(`${id}|${suffix}`);
+  if (indexKey) keys.push(`${indexKey}|${suffix}`);
+  if (keys.length === 0) keys.push(`current|${suffix}`);
+  for (const key of keys) {
+    if (state.thinkingPartsByItem.has(key)) return { keys, text: state.thinkingPartsByItem.get(key) };
+  }
+  return { keys, text: "" };
+}
+
+function storeThinkingEntry(state, keys, text) {
+  for (const key of keys) state.thinkingPartsByItem.set(key, text);
+}
+
 export function responsesToClaudeResponse(chunk, state) {
   if (!chunk) return null;
 
@@ -83,29 +121,92 @@ export function responsesToClaudeResponse(chunk, state) {
 
   // Thinking delta
   if (eventType === "response.reasoning_summary_text.delta" || eventType === "response.reasoning_text.delta" || eventType === "response.reasoning.delta") {
+    if (state.finishReasonSent || state.errorSent) return results.length > 0 ? results : null;
     const delta = data.delta || "";
-    if (delta) {
-      stopTextBlock(state, results);
-      if (!state.thinkingBlockStarted) {
-        state.thinkingBlockIndex = state.nextBlockIndex++;
-        state.thinkingBlockStarted = true;
-        results.push({
-          type: "content_block_start",
-          index: state.thinkingBlockIndex,
-          content_block: { type: "thinking", thinking: "" },
-        });
-      }
-      results.push({
-        type: "content_block_delta",
-        index: state.thinkingBlockIndex,
-        delta: { type: "thinking_delta", thinking: delta },
-      });
+    if (typeof delta === "string" && delta) {
+      const channel = eventType === "response.reasoning_text.delta" ? "text"
+        : eventType === "response.reasoning_summary_text.delta" ? "summary" : "reasoning";
+      const part = data.summary_index ?? data.content_index ?? 0;
+      const { keys, text } = resolveThinkingEntry(state, data.item_id, data.output_index !== undefined ? `idx_${data.output_index}` : null, channel, part);
+      storeThinkingEntry(state, keys, text + delta);
+      emitThinkingDelta(state, results, delta);
+    }
+    return results.length > 0 ? results : null;
+  }
+
+  const emitThinkingComplete = (complete, id, indexKey, channel, part) => {
+    if (typeof complete !== "string" || !complete) return;
+    if (state.finishReasonSent || state.errorSent) return;
+    const { keys, text: emitted } = resolveThinkingEntry(state, id, indexKey, channel, part);
+    if (complete === emitted || !complete.startsWith(emitted)) {
+      if (complete === emitted) storeThinkingEntry(state, keys, complete);
+      return;
+    }
+    const suffix = complete.slice(emitted.length);
+    if (!suffix) return;
+    storeThinkingEntry(state, keys, complete);
+    emitThinkingDelta(state, results, suffix);
+  };
+
+  // item.text fallback has no channel of its own upstream: it completes
+  // whatever delta channel (summary/text/reasoning) streamed before it.
+  // Dedupe against all thinking channels so the full done text does not
+  // replay an already-emitted prefix. Contradictory text emits nothing.
+  const emitThinkingCompleteAnyChannel = (complete, id, indexKey, part) => {
+    if (typeof complete !== "string" || !complete) return;
+    if (state.finishReasonSent || state.errorSent) return;
+    const channels = ["summary", "text", "reasoning", "item"];
+    const entries = channels.map((channel) => ({ channel, ...resolveThinkingEntry(state, id, indexKey, channel, part) }));
+    const exact = entries.find((entry) => complete === entry.text);
+    if (exact) {
+      storeThinkingEntry(state, exact.keys, complete);
+      return;
+    }
+    let best = null;
+    for (const entry of entries) {
+      if (entry.text && complete.startsWith(entry.text) && (!best || entry.text.length > best.text.length)) best = entry;
+    }
+    if (best) {
+      const suffix = complete.slice(best.text.length);
+      if (!suffix) return;
+      storeThinkingEntry(state, best.keys, complete);
+      emitThinkingDelta(state, results, suffix);
+      return;
+    }
+    if (entries.some((entry) => entry.text)) return;
+    const allKeys = [...new Set(entries.flatMap((entry) => entry.keys))];
+    storeThinkingEntry(state, allKeys, complete);
+    emitThinkingDelta(state, results, complete);
+  };
+
+  // Complete reasoning done events carry text that never arrived as deltas.
+  if (eventType === "response.reasoning_summary_text.done" || eventType === "response.reasoning_text.done") {
+    const channel = eventType === "response.reasoning_text.done" ? "text" : "summary";
+    const part = data.summary_index ?? data.content_index ?? 0;
+    emitThinkingComplete(data.text, data.item_id, data.output_index !== undefined ? `idx_${data.output_index}` : null, channel, part);
+    return results.length > 0 ? results : null;
+  }
+
+  // Complete reasoning items may hold summary text that never arrived as deltas.
+  if (eventType === "response.output_item.done" && (data.item?.type === "reasoning" || data.item?.type === RESPONSES_ITEM.REASONING)) {
+    const id = data.item?.id || data.item_id;
+    const indexKey = data.output_index !== undefined ? `idx_${data.output_index}` : null;
+    const summary = Array.isArray(data.item.summary) ? data.item.summary : [];
+    let hasValidSummary = false;
+    for (const [partIndex, part] of summary.entries()) {
+      if (part?.type !== RESPONSES_ITEM.SUMMARY_TEXT || typeof part.text !== "string" || !part.text) continue;
+      hasValidSummary = true;
+      emitThinkingComplete(part.text, id, indexKey, "summary", part.summary_index ?? partIndex);
+    }
+    if (!hasValidSummary && typeof data.item.text === "string" && data.item.text) {
+      emitThinkingCompleteAnyChannel(data.item.text, id, indexKey, 0);
     }
     return results.length > 0 ? results : null;
   }
 
   const emitTextDelta = (delta) => {
     if (typeof delta !== "string" || !delta) return;
+    if (state.finishReasonSent || state.errorSent) return;
     stopThinkingBlock(state, results);
     if (!state.textBlockStarted) {
       state.textBlockIndex = state.nextBlockIndex++;
