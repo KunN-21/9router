@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
+import { resolveCliApiKey } from "../resolveApiKey.js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -97,7 +98,7 @@ export async function POST(request) {
     const updated = {
       ...existing,
       baseUrl: normalizedBaseUrl,
-      apiKey: apiKey || "sk_9router",
+      apiKey: await resolveCliApiKey(apiKey),
       model: model || existing.model || "provider/model-id",
       _managedBy: "9router",
     };

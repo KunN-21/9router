@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
+import { resolveCliApiKey } from "../resolveApiKey.js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -54,7 +55,7 @@ const has9RouterInYml = (content) => {
 // Build standard 9Router provider block for models.yml
 const buildOmpProviderYaml = (baseUrl, apiKey) => {
   const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
-  const key = apiKey || "sk_9router";
+  const key = apiKey || "";
   return `  ${PROVIDER_ID}:
     baseUrl: ${normalizedBaseUrl}
     apiKey: ${key}
@@ -108,7 +109,9 @@ export async function POST(request) {
     await fs.mkdir(getOmpDir(), { recursive: true });
 
     let ymlContent = await readModelsYml();
-    const providerBlock = buildOmpProviderYaml(baseUrl, apiKey);
+    const resolvedKey = await resolveCliApiKey(apiKey);
+
+    const providerBlock = buildOmpProviderYaml(baseUrl, resolvedKey);
 
     // Remove existing 9router provider if present
     const regex = new RegExp(`\\s*${PROVIDER_ID}:[\\s\\S]*?(?=\\n\\s*\\w+:|$)`, "g");
@@ -142,7 +145,7 @@ export async function POST(request) {
         ).run(
           PROVIDER_ID,
           "api_key",
-          JSON.stringify({ apiKey: apiKey || "sk_9router", baseUrl }),
+          JSON.stringify({ apiKey: resolvedKey, baseUrl }),
           Math.floor(Date.now() / 1000),
           Math.floor(Date.now() / 1000)
         );

@@ -130,7 +130,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
   }
 
   // Build tool_call_id -> name map
-  const tcID2Name = {};
+  const tcID2Name = Object.create(null);
   if (body.messages && Array.isArray(body.messages)) {
     for (const msg of body.messages) {
       if (msg.role === ROLE.ASSISTANT && msg.tool_calls) {
@@ -144,7 +144,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
   }
 
   // Build tool responses cache
-  const toolResponses = {};
+  const toolResponses = Object.create(null);
   if (body.messages && Array.isArray(body.messages)) {
     for (const msg of body.messages) {
       if (msg.role === ROLE.TOOL && msg.tool_call_id) {
@@ -155,7 +155,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
       }
     }
   }
-  const toolResponseCursor = {};
+  const toolResponseCursor = Object.create(null);
 
   // Gemini validates that functionCall ids are unique across the WHOLE history,
   // and rejects the entire request with 400 INVALID_ARGUMENT when one repeats.

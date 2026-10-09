@@ -89,6 +89,66 @@ async function parseStream(response, log, callbacks = {}) {
   let bytesReceived = 0;
   let lastProgressLogMs = 0;
 
+  const processBlock = (block) => {
+    const lines = block.split("\n");
+    let eventName = null;
+    let dataStr = "";
+    for (const line of lines) {
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+    }
+    if (!eventName) return;
+    if (eventName !== lastEvent) {
+      log?.info?.("IMAGE", `codex progress: ${eventName}`);
+      lastEvent = eventName;
+    }
+
+    const now = Date.now();
+    if (callbacks.onProgress && now - lastProgressLogMs > 200) {
+      lastProgressLogMs = now;
+      callbacks.onProgress({ stage: eventName, bytesReceived });
+    }
+
+    if (eventName === "response.image_generation_call.partial_image" && dataStr) {
+      try {
+        const data = JSON.parse(dataStr);
+        if (callbacks.onPartialImage && data?.partial_image_b64) {
+          callbacks.onPartialImage({ b64_json: data.partial_image_b64, index: data.partial_image_index });
+        }
+      } catch {}
+    }
+
+    if (eventName === "response.output_item.done" && dataStr) {
+      try {
+        const data = JSON.parse(dataStr);
+        const item = data?.item;
+        if (item?.type === "image_generation_call" && item.result) {
+          imageB64 = item.result;
+        }
+      } catch {}
+    }
+
+    if ((eventName === "response.completed" || eventName === "response.done") && dataStr) {
+      try {
+        const data = JSON.parse(dataStr);
+        usage = normalizeResponsesUsage(data?.response?.usage ?? data?.usage) || usage;
+        if (!imageB64) {
+          const output = data?.response?.output;
+          if (Array.isArray(output)) {
+            for (const item of output) {
+              if (item?.type === "image_generation_call" && item.result) {
+                imageB64 = item.result;
+                break;
+              }
+            }
+          } else if (data?.item?.type === "image_generation_call" && data.item.result) {
+            imageB64 = data.item.result;
+          }
+        }
+      } catch {}
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -99,53 +159,15 @@ async function parseStream(response, log, callbacks = {}) {
     while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
       const block = buffer.slice(0, sepIdx);
       buffer = buffer.slice(sepIdx + 2);
-
-      const lines = block.split("\n");
-      let eventName = null;
-      let dataStr = "";
-      for (const line of lines) {
-        if (line.startsWith("event:")) eventName = line.slice(6).trim();
-        else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
-      }
-      if (!eventName) continue;
-      if (eventName !== lastEvent) {
-        log?.info?.("IMAGE", `codex progress: ${eventName}`);
-        lastEvent = eventName;
-      }
-
-      const now = Date.now();
-      if (callbacks.onProgress && now - lastProgressLogMs > 200) {
-        lastProgressLogMs = now;
-        callbacks.onProgress({ stage: eventName, bytesReceived });
-      }
-
-      if (eventName === "response.image_generation_call.partial_image" && dataStr) {
-        try {
-          const data = JSON.parse(dataStr);
-          if (callbacks.onPartialImage && data?.partial_image_b64) {
-            callbacks.onPartialImage({ b64_json: data.partial_image_b64, index: data.partial_image_index });
-          }
-        } catch {}
-      }
-
-      if (eventName === "response.output_item.done" && dataStr) {
-        try {
-          const data = JSON.parse(dataStr);
-          const item = data?.item;
-          if (item?.type === "image_generation_call" && item.result) {
-            imageB64 = item.result;
-          }
-        } catch {}
-      }
-
-      if ((eventName === "response.completed" || eventName === "response.done") && dataStr) {
-        try {
-          const data = JSON.parse(dataStr);
-          usage = normalizeResponsesUsage(data?.response?.usage ?? data?.usage) || usage;
-        } catch {}
-      }
+      processBlock(block);
     }
   }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    processBlock(buffer.trim());
+  }
+
   return { imageB64, usage };
 }
 
@@ -163,6 +185,7 @@ function buildSseResponse(providerResponse, log, onSuccess, onUsage) {
           onPartialImage: (info) => send("partial_image", info),
         });
         if (!b64) {
+          if (usage && onUsage) await onUsage(usage, { status: "error" });
           send("error", { message: "Codex did not return an image. Account may not be entitled (Plus/Pro required)." });
         } else {
           if (usage && onUsage) await onUsage(usage);
@@ -239,6 +262,7 @@ export default {
     }
     const { imageB64: b64, usage } = await parseStream(response, log);
     if (!b64) {
+      if (usage && onUsage) await onUsage(usage, { status: "error" });
       throw new Error("Codex did not return an image. Account may not be entitled (Plus/Pro required).");
     }
     if (usage && onUsage) await onUsage(usage);

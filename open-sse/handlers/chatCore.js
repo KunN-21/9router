@@ -1,6 +1,6 @@
 import { detectFormat } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
-import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
+import { applyThinking, extractThinking, stripThinkingSuffix, clampNativeThinking } from "../translator/concerns/thinkingUnified.js";
 import { FORMATS } from "../translator/formats.js";
 import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/formats/claude.js";
 import { createStreamController } from "../utils/streamHandler.js";
@@ -129,7 +129,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
   const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
-  let stream = providerRequiresStreaming ? true : (body.stream !== false);
+  let stream = providerRequiresStreaming ? true : clientRequestedStreaming;
 
   // Image generation models require non-streaming (Google v1internal:generateContent)
   const modelType = getModelType(alias, model);
@@ -148,6 +148,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // This fixes AI SDK compatibility where clients send Accept: application/json
   if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
     stream = false;
+  }
+
+  // Propagate the resolved stream decision when the client omitted `stream`.
+  // The decision above defaults to streaming for forced-stream providers, but
+  // same-format passthrough copies body.stream verbatim, so upstream sees no flag,
+  // answers with plain JSON, and the SSE path emits one raw JSON object + "data: [DONE]".
+  // Gemini-family bodies carry streaming in the URL, not the body (an unknown `stream` field is a 400).
+  // Rebind local `body` so the per-attempt copy carries `stream` without mutating the caller's object.
+  if (typeof body.stream !== "boolean" && ![FORMATS.GEMINI, FORMATS.GEMINI_CLI, FORMATS.ANTIGRAVITY].includes(sourceFormat)) {
+    body = { ...body, stream };
   }
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
@@ -185,17 +195,20 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (provider === "codex") {
       const suffixThinking = {};
       applyThinking(sourceFormat, upstreamModel, suffixThinking, provider);
-      if (suffixThinking.reasoning_effort) {
+      const effort = suffixThinking.reasoning?.effort || suffixThinking.reasoning_effort;
+      if (effort) {
         const reasoning = translatedBody.reasoning;
         translatedBody.reasoning = {
           ...(reasoning && typeof reasoning === "object" && !Array.isArray(reasoning) ? reasoning : {}),
-          effort: suffixThinking.reasoning_effort,
+          effort,
         };
         delete translatedBody.reasoning_effort;
       }
     }
     // Normalize newer Cowork/CC beta shapes (adaptive thinking, mid-conversation system) the API rejects
     if (clientTool === "claude") normalizeClaudePassthrough(translatedBody, translatedBody.model);
+    // Clamp native thinking levels the target model rejects (GLM-5.3: low|high|max only)
+    if (clientTool === "claude") clampNativeThinking(translatedBody, provider, model);
   } else {
     translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
     if (!translatedBody) {

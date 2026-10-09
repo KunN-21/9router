@@ -18,10 +18,10 @@ import { saveRequestUsage } from "@/lib/usageDb.js";
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
 
-function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage, status = "success" }) {
   if (!usage || typeof usage !== "object") return;
-  const promptTokens = usage.prompt_tokens;
-  const completionTokens = usage.completion_tokens;
+  const promptTokens = usage.prompt_tokens ?? usage.input_tokens;
+  const completionTokens = usage.completion_tokens ?? usage.output_tokens;
   if (!Number.isSafeInteger(promptTokens) || promptTokens < 0 ||
       !Number.isSafeInteger(completionTokens) || completionTokens < 0) {
     return;
@@ -34,7 +34,7 @@ function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoi
     apiKey: apiKey || undefined,
     endpoint: endpoint || null,
     tokens: usage,
-    status: "success",
+    status: status || "success",
   }).catch(() => {});
 }
 
@@ -142,7 +142,8 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           testStatus: "active"
         });
       },
-      onUsage: (usage) => {
+      onUsage: (usage, meta) => {
+        const status = typeof meta === "string" ? meta : meta?.status || "success";
         recordImageRequestUsage({
           provider,
           model,
@@ -150,6 +151,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           apiKey,
           endpoint,
           usage,
+          status,
         });
       },
       onRequestSuccess: async () => {

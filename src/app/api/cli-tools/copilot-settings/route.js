@@ -1,6 +1,7 @@
 "use server";
 
 import { NextResponse } from "next/server";
+import { resolveCliApiKey } from "../resolveApiKey.js";
 import { readExistingConfig } from "@/lib/cliTools/readExistingConfig";
 import fs from "fs/promises";
 import path from "path";
@@ -83,7 +84,7 @@ export async function POST(request) {
     const config = existingConfig ?? [];
 
     const endpointUrl = `${baseUrl}/chat/completions#models.ai.azure.com`;
-    const keyToUse = apiKey || "sk_9router";
+    const keyToUse = await resolveCliApiKey(apiKey);
 
     const newEntry = {
       name: "9Router",

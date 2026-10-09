@@ -444,7 +444,7 @@ export function cleanJSONSchemaForAntigravity(schema) {
 // "The referenced name `#/$defs/...` in function_response.response does not match
 // to a display_name in the function_response.parts". Tool results that carry a
 // JSON Schema / OpenAPI document (webfetch, read, MCP) hit this, so rename the key.
-export const GEMINI_RESERVED_RESPONSE_KEYS = { "$ref": "_ref" };
+export const GEMINI_RESERVED_RESPONSE_KEYS = Object.assign(Object.create(null), { "$ref": "_ref" });
 
 // Recursively rename reserved keys in a tool-result payload (arrays/objects only)
 export function sanitizeFunctionResponsePayload(value) {
@@ -452,7 +452,21 @@ export function sanitizeFunctionResponsePayload(value) {
   if (!value || typeof value !== "object") return value;
   const out = {};
   for (const [key, val] of Object.entries(value)) {
-    out[GEMINI_RESERVED_RESPONSE_KEYS[key] ?? key] = sanitizeFunctionResponsePayload(val);
+    let targetKey = GEMINI_RESERVED_RESPONSE_KEYS[key] ?? key;
+    if (Object.prototype.hasOwnProperty.call(out, targetKey)) {
+      let n = 2;
+      let candidate = `${targetKey}_${n}`;
+      while (Object.prototype.hasOwnProperty.call(out, candidate)) {
+        candidate = `${targetKey}_${++n}`;
+      }
+      targetKey = candidate;
+    }
+    Object.defineProperty(out, targetKey, {
+      value: sanitizeFunctionResponsePayload(val),
+      writable: true,
+      enumerable: true,
+      configurable: true
+    });
   }
   return out;
 }

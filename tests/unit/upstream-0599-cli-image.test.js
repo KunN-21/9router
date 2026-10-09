@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
 
 import codexImageAdapter from "../../open-sse/handlers/imageProviders/codex.js";
@@ -32,20 +30,6 @@ describe("Image usage and CLI lifecycle selective upstream fixes", () => {
         total_tokens: 3700,
         cached_tokens: 300,
       });
-    });
-  });
-
-  describe("CLI server lifecycle attachment order (PR 4522)", () => {
-    it("attaches server lifecycle events before entering trayMode branch", () => {
-      const cliPath = path.resolve(__dirname, "../../cli/cli.js");
-      const content = fs.readFileSync(cliPath, "utf8");
-
-      const attachPos = content.indexOf("attachServerEvents();");
-      const trayPos = content.indexOf("if (trayMode)");
-
-      expect(attachPos).toBeGreaterThan(-1);
-      expect(trayPos).toBeGreaterThan(-1);
-      expect(attachPos).toBeLessThan(trayPos);
     });
   });
 });

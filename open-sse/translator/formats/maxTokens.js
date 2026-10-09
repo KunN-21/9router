@@ -1,5 +1,9 @@
 import { DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS } from "../../config/runtimeConfig.js";
 
+function isPositiveInteger(val) {
+  return typeof val === "number" && Number.isInteger(val) && val > 0;
+}
+
 /**
  * Adjust max_tokens based on request context
  * @param {object} body - Request body
@@ -13,10 +17,17 @@ import { DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS } from "../../config/runtimeConf
  * @returns {number} Adjusted max_tokens
  */
 export function adjustMaxTokens(body, ceiling = DEFAULT_MAX_TOKENS, honorExplicitCap = false) {
-  let maxTokens = body.max_completion_tokens || body.max_tokens || DEFAULT_MAX_TOKENS;
+  const explicitCap = isPositiveInteger(body?.max_completion_tokens)
+    ? body.max_completion_tokens
+    : isPositiveInteger(body?.max_tokens)
+      ? body.max_tokens
+      : null;
+
+  let maxTokens = explicitCap !== null ? explicitCap : DEFAULT_MAX_TOKENS;
 
   // Auto-increase for tool calling to prevent truncated arguments (min never above max)
-  if (!honorExplicitCap && body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
+  const shouldHonorCap = honorExplicitCap && explicitCap !== null;
+  if (!shouldHonorCap && body?.tools && Array.isArray(body.tools) && body.tools.length > 0) {
     if (maxTokens < DEFAULT_MIN_TOKENS) {
       maxTokens = DEFAULT_MIN_TOKENS;
     }
@@ -25,7 +36,7 @@ export function adjustMaxTokens(body, ceiling = DEFAULT_MAX_TOKENS, honorExplici
   // Ensure max_tokens > thinking.budget_tokens (Claude API requirement)
   // Claude API requires strictly greater, so add buffer instead of using the
   // ceiling which could equal budget_tokens when budget_tokens >= ceiling
-  if (body.thinking?.budget_tokens && maxTokens <= body.thinking.budget_tokens) {
+  if (body?.thinking?.budget_tokens && maxTokens <= body.thinking.budget_tokens) {
     maxTokens = body.thinking.budget_tokens + 1024;
   }
 
@@ -46,4 +57,3 @@ export function adjustMaxTokens(body, ceiling = DEFAULT_MAX_TOKENS, honorExplici
 export function requiresMaxCompletionTokens(model) {
   return /gpt-5|o[134]-/i.test(model);
 }
-

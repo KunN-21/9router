@@ -48,13 +48,17 @@ function toResponsesUsage(usage) {
  * @returns {Array} Array of events with { event, data } structure
  */
 export function openaiToOpenAIResponsesResponse(chunk, state) {
+  if (state.completedSent || state.failedSent) {
+    return [];
+  }
+
   if (!chunk) {
     return flushEvents(state);
   }
 
   // Handle OpenAI error payload (e.g. rate limit or server error)
   if (chunk.error) {
-    if (state.completedSent || state.failedSent) return [];
+    state.completionPending = false;
     state.failedSent = true;
     const nextSeq = () => ++state.seq;
     return [{
@@ -506,7 +510,8 @@ function collectCompletedOutputItems(state) {
 }
 
 function sendCompleted(state, emit) {
-  if (!state.completedSent) {
+  state.completionPending = false;
+  if (!state.completedSent && !state.failedSent) {
     state.completedSent = true;
     emit("response.completed", {
       type: "response.completed",
@@ -525,7 +530,8 @@ function sendCompleted(state, emit) {
 }
 
 function flushEvents(state) {
-  if (state.completedSent) return [];
+  state.completionPending = false;
+  if (state.completedSent || state.failedSent) return [];
   
   const events = [];
   const nextSeq = () => ++state.seq;

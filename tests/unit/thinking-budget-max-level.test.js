@@ -30,10 +30,18 @@ describe("budgetToLevel reaches max tier", () => {
   });
 });
 
-describe("applyThinking (openai-responses): large budgets map to max effort", () => {
-  it("budget 98304 → reasoning_effort \"max\" for gpt-5.6-sol (openai wire)", () => {
+describe("applyThinking: large budgets map to max effort on matching wire", () => {
+  it("budget 98304 maps to nested max effort on Responses wire", () => {
     const body = { thinking: { type: "enabled", budget_tokens: 98304 } };
     const out = applyThinking(FORMATS.OPENAI_RESPONSES, "gpt-5.6-sol", body, "codex");
-    expect(out?.reasoning_effort).toBe("max");
+    expect(out.reasoning).toEqual({ effort: "max", summary: "auto" });
+    expect(out.reasoning_effort).toBeUndefined();
+  });
+
+  it("budget 98304 keeps top-level max effort on Chat wire", () => {
+    const body = { thinking: { type: "enabled", budget_tokens: 98304 } };
+    const out = applyThinking(FORMATS.OPENAI, "gpt-5.6-sol", body, "codex");
+    expect(out.reasoning_effort).toBe("max");
+    expect(out.reasoning).toBeUndefined();
   });
 });

@@ -220,11 +220,16 @@ describe("applyThinking per provider format", () => {
     ["gpt-5.6-luna", "ultra", "max"],
   ])("normalizes Codex %s effort %s to %s", (model, effort, expected) => {
     const out = apply("openai-responses", model, { reasoning: { effort } }, "codex");
-    expect(out.reasoning_effort).toBe(expected);
+    expect(out.reasoning).toEqual({ effort: expected, summary: "auto" });
+    expect(out.reasoning_effort).toBeUndefined();
+    const chat = apply("openai", model, { reasoning: { effort } }, "codex");
+    expect(chat.reasoning_effort).toBe(expected);
+    expect(chat.reasoning).toBeUndefined();
   });
   it("applies a supported Codex Ultra suffix", () => {
     const out = apply("openai-responses", "gpt-5.6-sol(ultra)", {}, "codex");
-    expect(out.reasoning_effort).toBe("ultra");
+    expect(out.reasoning).toEqual({ effort: "ultra", summary: "auto" });
+    expect(out.reasoning_effort).toBeUndefined();
   });
   it("keeps Codex-only GPT-5.6 levels out of Kiro translation", () => {
     const out = apply("openai", "gpt-5.6-sol", { reasoning_effort: "max" }, "kiro");

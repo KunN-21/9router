@@ -5,13 +5,13 @@
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
-import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
+import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel, EFFORT_LEVELS } from "./thinking.js";
 
 // Map a target wire-format to its native thinking format (when capability has none).
 const FORMAT_TO_NATIVE = {
   openai: "openai",
-  "openai-responses": "openai",
-  "openai-response": "openai",
+  "openai-responses": "openai-responses",
+  "openai-response": "openai-responses",
   codex: "openai",
   claude: "claude-budget",
   gemini: "gemini-budget",
@@ -129,16 +129,12 @@ const NATIVE_ONLY_FORMATS = new Set(["gemini-level", "gemini-budget", "claude-bu
 
 function resolveFormat(targetFormat, model, provider) {
   if (targetFormat === "commandcode") return "commandcode";
+  if (targetFormat === "openai-responses" || targetFormat === "openai-response") return "openai-responses";
   const providerFmt = provider ? PROVIDERS[provider]?.thinkingFormat : null;
   if (providerFmt) return providerFmt;
   const caps = getCapabilitiesForModel(provider, model);
   const isOpenAIWire = targetFormat === "openai" || targetFormat === "openai-responses";
   if (caps.thinkingFormat && !(isOpenAIWire && NATIVE_ONLY_FORMATS.has(caps.thinkingFormat))) {
-    // Muse (Meta) strict Responses API rejects top-level reasoning_effort and
-    // requires nested reasoning: { effort, summary }. Other upstreams keep Chat-shaped effort.
-    if (provider === "muse" && targetFormat === "openai-responses") {
-      return "openai-responses";
-    }
     return caps.thinkingFormat;
   }
   return FORMAT_TO_NATIVE[targetFormat] || "openai";
@@ -171,6 +167,36 @@ function normalizeOpenAILevel(level, supportedLevels) {
   if (supportedLevels?.includes(level)) return level;
   if (level === "ultra" && supportedLevels?.includes("max")) return "max";
   return "xhigh";
+}
+
+// Level not accepted by this model → nearest supported level over the shared
+// effort scale (ties round up), so "xhigh" → "max" for a [low, high, max] set.
+function clampToSupportedLevel(level, supportedLevels) {
+  if (!Array.isArray(supportedLevels) || supportedLevels.length === 0 || supportedLevels.includes(level)) return level;
+  const order = ["none", ...EFFORT_LEVELS];
+  const idx = order.indexOf(level === "ultra" ? "max" : level);
+  if (idx === -1) return level;
+  let best = null;
+  for (const candidate of supportedLevels) {
+    const i = order.indexOf(candidate);
+    if (i <= 0) continue;
+    const d = Math.abs(i - idx);
+    if (!best || d < best.d || (d === best.d && i > best.i)) best = { level: candidate, d, i };
+  }
+  return best ? best.level : level;
+}
+
+// Clamp native passthrough effort theo danh sách của model zai.
+// Clone output_config để không sửa object lồng nhau thuộc caller.
+export function clampNativeThinking(body, provider, model) {
+  const eff = body?.output_config?.effort;
+  if (typeof eff !== "string" || !eff) return body;
+  const caps = getCapabilitiesForModel(provider, model);
+  if (caps.thinkingFormat !== "zai") return body;
+  const levels = getThinkingLevels(provider, model);
+  const mapped = clampToSupportedLevel(eff.toLowerCase(), levels);
+  if (mapped && mapped !== eff) body.output_config = { ...body.output_config, effort: mapped };
+  return body;
 }
 
 function toGeminiThinkingLevel(cfg) {
@@ -266,7 +292,7 @@ function stripAll(body) {
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels, display, originalReasoning = undefined) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
   // Model cannot disable thinking → clamp "none" to minimal effort instead.
@@ -280,11 +306,12 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
       if (none && canDisable) { delete body.reasoning; break; }
       const level = toLevel(eff);
       if (level) {
-        const current = body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
-          ? body.reasoning
-          : {};
-        body.reasoning = { ...current, effort: normalizeOpenAILevel(level, supportedLevels) };
-        if (!body.reasoning.summary) body.reasoning.summary = "auto";
+        body.reasoning = {
+          effort: normalizeOpenAILevel(level, supportedLevels),
+          summary: typeof originalReasoning?.summary === "string" && originalReasoning.summary ? originalReasoning.summary : "auto",
+        };
+      } else if (typeof originalReasoning?.summary === "string" && originalReasoning.summary) {
+        body.reasoning = { summary: originalReasoning.summary };
       }
       delete body.reasoning_effort;
       break;
@@ -423,6 +450,10 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
 export function applyThinking(targetFormat, model, body, provider = null, intent = undefined) {
   if (!body || typeof body !== "object") return body;
 
+  const originalReasoning = body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
+    ? { ...body.reasoning }
+    : undefined;
+
   const { cleanModel, override } = parseSuffix(model);
   const cfg = override || intent || extractThinking(body);
   const caps = getCapabilitiesForModel(provider, cleanModel);
@@ -441,6 +472,6 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   // An OpenAI-shaped client's ask arrives via the captured intent instead.
   const display = typeof body.thinking?.display === "string" ? body.thinking.display : intent?.display;
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps, supportedLevels, display);
+  applyFormat(fmt, body, cfg, caps, supportedLevels, display, originalReasoning);
   return body;
 }

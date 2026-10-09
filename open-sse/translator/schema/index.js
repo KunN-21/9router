@@ -5,4 +5,4 @@ export {
   VALID_OPENAI_CONTENT_TYPES, VALID_OPENAI_MESSAGE_TYPES,
 } from "./blocks.js";
 export { OPENAI_FINISH, CLAUDE_STOP, GEMINI_FINISH } from "./finishReasons.js";
-export { MODEL_FALLBACK, DEFAULT_IMAGE_MIME } from "./defaults.js";
+export { MODEL_FALLBACK, DEFAULT_IMAGE_MIME, OPENAI_SERVICE_TIERS, CLAUDE_TO_OPENAI_SERVICE_TIER } from "./defaults.js";

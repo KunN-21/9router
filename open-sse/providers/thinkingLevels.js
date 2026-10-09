@@ -64,19 +64,23 @@ const PATTERN_THINKING = [
   { provider: "codebuddy-cn", pattern: "hy4*",         levels: ["high"] },
   // codebuddy-intl rides the same gateway catalog, so its deepseek levels match.
   { provider: "codebuddy-intl", pattern: "deepseek-v4*", levels: ["low", "high", "xhigh"] },
+  // GLM-5.3 dùng low|high|max theo upstream #4636.
+  // Giữ -prime ngoài pattern và giữ precedence của cấu hình theo provider.
+  { pattern: "*glm-5.3", levels: ["low", "high", "max"] },
+  { pattern: "*glm-5.3-flash", levels: ["low", "high", "max"] },
 ];
 
 // Returns valid thinking levels for a model, or null when the model has no reasoning.
 export function getThinkingLevels(provider, model) {
-  if (provider === "kiro" && resolveKiroEffortPath(model) === null) return null;
-  const caps = getCapabilitiesForModel(provider, model);
+  const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "").trim();
+  if (provider === "kiro" && resolveKiroEffortPath(baseId) === null) return null;
+  const caps = getCapabilitiesForModel(provider, baseId);
   if (!caps.reasoning) return null;
-  const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "");
   const modelLevels = provider === "codex"
     ? getProviderModels("cx").find((entry) => entry.id === baseId)?.thinkingLevels
     : null;
   const hit = PATTERN_THINKING.find((entry) =>
-    (!entry.provider || entry.provider === provider) && matchPattern(entry.pattern, model)
+    (!entry.provider || entry.provider === provider) && matchPattern(entry.pattern, baseId)
   );
   let levels = modelLevels || hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || L.base;
   if (caps.thinkingCanDisable === false) levels = levels.filter((l) => l !== "none");

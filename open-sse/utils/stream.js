@@ -153,6 +153,13 @@ export function createSSEStream(options = {}) {
   // DONE/error guards: error is sticky and terminal; [DONE] may be emitted at
   // most once, and only for OpenAI-compatible Chat clients; nothing may be
   // emitted after [DONE].
+  const clearCompletionTimer = () => {
+    if (completionFlushTimer) {
+      clearTimeout(completionFlushTimer);
+      completionFlushTimer = null;
+    }
+  };
+
   // ponytail: clientKind resolved once per stream; passthrough without explicit
   // formats falls back to provider inference (isClientGemini). Upgrade when
   // callers pass targetFormat explicitly.
@@ -163,19 +170,27 @@ export function createSSEStream(options = {}) {
     : "chat";
   const clientKind = resolveClientKind();
   const emitDone = (controller) => {
+    clearCompletionTimer();
     if (streamDoneSent || resolveClientKind() !== "chat") return;
     ensureBlankSeparator(controller);
     const doneOutput = "data: [DONE]\n\n";
-    reqLogger?.appendConvertedChunk?.(doneOutput);
-    controller.enqueue(sharedEncoder.encode(doneOutput));
-    lastEmitted = doneOutput;
-    streamDoneSent = true;
+    try {
+      reqLogger?.appendConvertedChunk?.(doneOutput);
+      controller.enqueue(sharedEncoder.encode(doneOutput));
+      lastEmitted = doneOutput;
+      streamDoneSent = true;
+    } catch {
+      streamDoneSent = true;
+    }
   };
   const emitError = (controller, format, payload) => {
+    clearCompletionTimer();
     if (downstreamErrorSent) return;
     const errOutput = formatSSE(payload, format);
-    reqLogger?.appendConvertedChunk?.(errOutput);
-    controller.enqueue(sharedEncoder.encode(errOutput));
+    try {
+      reqLogger?.appendConvertedChunk?.(errOutput);
+      controller.enqueue(sharedEncoder.encode(errOutput));
+    } catch { /* stream already closed */ }
     downstreamErrorSent = true;
     upstreamErrorSeen = true;
     upstreamSuccessSeen = false;
@@ -183,16 +198,28 @@ export function createSSEStream(options = {}) {
   };
   const emitPassthrough = (controller, output) => {
     if (streamDoneSent) return;
-    reqLogger?.appendConvertedChunk?.(output);
-    controller.enqueue(sharedEncoder.encode(output));
-    lastEmitted = output;
+    try {
+      reqLogger?.appendConvertedChunk?.(output);
+      controller.enqueue(sharedEncoder.encode(output));
+      lastEmitted = output;
+    } catch {
+      upstreamErrorSeen = true;
+      upstreamSuccessSeen = false;
+      clearCompletionTimer();
+    }
   };
   const emitTranslate = (controller, output) => {
     if (streamDoneSent) return;
-    reqLogger?.appendConvertedChunk?.(output);
-    controller.enqueue(sharedEncoder.encode(output));
-    lastEmitted = output;
-    sseEmittedCount++;
+    try {
+      reqLogger?.appendConvertedChunk?.(output);
+      controller.enqueue(sharedEncoder.encode(output));
+      lastEmitted = output;
+      sseEmittedCount++;
+    } catch {
+      upstreamErrorSeen = true;
+      upstreamSuccessSeen = false;
+      clearCompletionTimer();
+    }
   };
   // Terminal frames must start on a blank separator: a data tail without its
   // trailing newline leaves the last frame ending in single "\n".
@@ -200,16 +227,20 @@ export function createSSEStream(options = {}) {
     if (streamDoneSent) return;
     if (lastEmitted && !lastEmitted.endsWith("\n\n")) {
       const sep = "\n";
-      reqLogger?.appendConvertedChunk?.(sep);
-      controller.enqueue(sharedEncoder.encode(sep));
-      lastEmitted += sep;
+      try {
+        reqLogger?.appendConvertedChunk?.(sep);
+        controller.enqueue(sharedEncoder.encode(sep));
+        lastEmitted += sep;
+      } catch {
+        clearCompletionTimer();
+      }
     }
   };
 
   // Usage/logging tail, callable from transform() as well as flush(): a client that
   // closes right after the terminal event cancels the reader, and flush() never runs.
   const finalizeStream = () => {
-    if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
+    clearCompletionTimer();
     if (finalized) return;
     finalized = true;
 
@@ -242,15 +273,23 @@ export function createSSEStream(options = {}) {
   // Emit the deferred response.completed now — at [DONE], or when the watchdog
   // below gives up on a usage trailer that never arrives.
   const flushPendingCompletion = (controller) => {
-    const completed = translateResponse(targetFormat, sourceFormat, null, state);
-    for (const item of completed || []) {
-      if (item === null || item === undefined) continue;
-      const output = formatSSE(item, sourceFormat);
-      reqLogger?.appendConvertedChunk?.(output);
-      controller.enqueue(sharedEncoder.encode(output));
-      sseEmittedCount++;
+    try {
+      const completed = translateResponse(targetFormat, sourceFormat, null, state);
+      for (const item of completed || []) {
+        if (item === null || item === undefined) continue;
+        const output = formatSSE(item, sourceFormat);
+        reqLogger?.appendConvertedChunk?.(output);
+        controller.enqueue(sharedEncoder.encode(output));
+        sseEmittedCount++;
+      }
+      upstreamSuccessSeen = true;
+      finalizeStream();
+    } catch (err) {
+      upstreamErrorSeen = true;
+      upstreamSuccessSeen = false;
+      clearCompletionTimer();
+      dbg("SSE", `flushPendingCompletion error: ${err.message || err}`);
     }
-    finalizeStream();
   };
 
   const processLine = (line, controller) => {
@@ -290,6 +329,7 @@ export function createSSEStream(options = {}) {
 
       const isDoneSentinel = trimmed === "data: [DONE]" || (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]");
       if (isDoneSentinel) {
+        clearCompletionTimer();
         const clientKind = resolveClientKind();
         const isUpstreamClaudeOrGemini = targetFormat === FORMATS.CLAUDE || isClientGemini(targetFormat, provider);
         if (isUpstreamClaudeOrGemini || clientKind === "claude" || clientKind === "gemini") {
@@ -331,6 +371,7 @@ export function createSSEStream(options = {}) {
 
           const termStatus = detectUpstreamTerminal(parsed, targetFormat, currentOpenAIResponsesEvent);
           if (termStatus === "error") {
+            clearCompletionTimer();
             upstreamErrorSeen = true;
             upstreamSuccessSeen = false;
           } else if (termStatus === "success" && !upstreamErrorSeen) {
@@ -447,6 +488,7 @@ export function createSSEStream(options = {}) {
 
     const termStatus = detectUpstreamTerminal(parsed, targetFormat, openAIResponsesEventName || currentOpenAIResponsesEvent);
     if (termStatus === "error") {
+      clearCompletionTimer();
       upstreamErrorSeen = true;
       upstreamSuccessSeen = false;
     } else if (termStatus === "success" && !upstreamErrorSeen) {
@@ -456,6 +498,7 @@ export function createSSEStream(options = {}) {
     // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
     // For other formats: done=true is the [DONE] sentinel, skip
     if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
+      clearCompletionTimer();
       const isTargetClaudeOrGemini = targetFormat === FORMATS.CLAUDE || isClientGemini(targetFormat, provider);
       if (isTargetClaudeOrGemini) {
         // Upstream Claude/Gemini with [DONE] is a stray sentinel, NOT success terminal.
@@ -596,6 +639,11 @@ export function createSSEStream(options = {}) {
         }
       }
     }
+
+    if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES &&
+        (state?.completedSent || state?.failedSent || !state?.completionPending)) {
+      clearCompletionTimer();
+    }
   };
 
   return new TransformStream({
@@ -615,17 +663,27 @@ export function createSSEStream(options = {}) {
       // The completion deferral can outlive the upstream: a broken chat upstream
       // may stall after finish_reason with no usage trailer and no [DONE], holding
       // the connection open. Bound the wait so the client still gets a terminal event.
-      if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES &&
+      if (state?.completedSent || state?.failedSent || !state?.completionPending || upstreamErrorSeen || downstreamErrorSent) {
+        clearCompletionTimer();
+      } else if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES &&
           state?.completionPending && !state?.completedSent && !completionFlushTimer) {
         completionFlushTimer = setTimeout(() => {
           completionFlushTimer = null;
-          if (state?.completedSent) return;
-          try { flushPendingCompletion(controller); } catch { /* controller already closed */ }
+          if (state?.completedSent || state?.failedSent || downstreamErrorSent || upstreamErrorSeen) return;
+          try {
+            flushPendingCompletion(controller);
+          } catch (err) {
+            upstreamErrorSeen = true;
+            upstreamSuccessSeen = false;
+            clearCompletionTimer();
+            dbg("SSE", `watchdog completion error: ${err.message || err}`);
+          }
         }, PENDING_COMPLETION_FLUSH_MS);
       }
     },
 
     flush(controller) {
+      clearCompletionTimer();
       const evtSummary = Object.entries(eventTypeCounts).map(([k, v]) => `${k}=${v}`).join(",") || "none";
       dbg("SSE", `flush | provider=${provider} | model=${model} | recvLines=${sseLineCount} | emitted=${sseEmittedCount} | events=[${evtSummary}]`);
       trackPendingRequest(model, provider, connectionId, false);

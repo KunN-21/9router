@@ -2,7 +2,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { adjustMaxTokens, requiresMaxCompletionTokens } from "../formats/maxTokens.js";
 import { encodeDataUri } from "../concerns/image.js";
-import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
+import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK, OPENAI_SERVICE_TIERS, CLAUDE_TO_OPENAI_SERVICE_TIER } from "../schema/index.js";
 import { collapseTextParts } from "../concerns/message.js";
 
 function stripAnthropicBillingHeader(text) {
@@ -19,7 +19,7 @@ export function claudeToOpenAIRequest(model, body, stream) {
   };
 
   // Max tokens (gpt-5/o-series Chat Completions only accept max_completion_tokens)
-  if (body.max_tokens) {
+  if (body.max_tokens !== undefined) {
     const tokenParam = requiresMaxCompletionTokens(model) ? "max_completion_tokens" : "max_tokens";
     result[tokenParam] = adjustMaxTokens(body);
   }
@@ -91,6 +91,13 @@ export function claudeToOpenAIRequest(model, body, stream) {
 
   if (body.reasoning !== undefined) {
     result.reasoning = body.reasoning;
+  }
+
+  // Keep the tier across the OpenAI pivot: Codex Fast mode injects "priority"
+  // before translation, so dropping it here downgraded every /v1/messages request.
+  if (typeof body.service_tier === "string") {
+    const tier = CLAUDE_TO_OPENAI_SERVICE_TIER[body.service_tier] || body.service_tier;
+    if (OPENAI_SERVICE_TIERS.includes(tier)) result.service_tier = tier;
   }
 
   return result;

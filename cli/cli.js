@@ -688,9 +688,17 @@ function startServer(updatePromise) {
   });
 
   function attachServerEvents() {
+    const child = server;
+    let restartScheduled = false;
+    const scheduleRestartOnce = (code) => {
+      if (restartScheduled || child !== server) return;
+      restartScheduled = true;
+      tryRestart(code);
+    };
+
     server.on("error", (err) => {
       console.error("Failed to start server:", err.message);
-      if (!isShuttingDown) tryRestart();
+      if (!isShuttingDown) scheduleRestartOnce();
       else { cleanup(); process.exit(1); }
     });
 
@@ -699,7 +707,7 @@ function startServer(updatePromise) {
         process.exit(code || 0);
         return;
       }
-      tryRestart(code);
+      scheduleRestartOnce(code);
     });
   }
 
@@ -734,6 +742,7 @@ function startServer(updatePromise) {
     }
 
     setTimeout(() => {
+      if (isShuttingDown) return;
       server = spawnServer();
       attachServerEvents();
     }, delay);

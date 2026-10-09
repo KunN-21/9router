@@ -6,7 +6,6 @@ import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
-import { responsesToClaudeUsage } from "../../translator/concerns/usage.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
 import {
   openAICompletionToClaudeMessage,
@@ -172,7 +171,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       }
       if (onRequestSuccess) await onRequestSuccess();
 
-      const usage = canonicalizeUsage(responsesToClaudeUsage(jsonResponse.usage || {}));
+      const usage = canonicalizeUsage(jsonResponse.usage || {});
       appendLog({ tokens: usage, status: "200 OK" });
       saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
       if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
@@ -201,11 +200,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       const cacheCreate = usage.cache_creation_input_tokens;
       const inTokens = usage.prompt_tokens;
       const outTokens = usage.completion_tokens;
-      const cacheDetails = (cacheRead > 0 || cacheCreate > 0)
-        ? { prompt_tokens_details: {
+      const reasoning = usage.reasoning_tokens || jsonResponse.usage?.output_tokens_details?.reasoning_tokens || 0;
+      const cacheDetails = {
+        ...((cacheRead > 0 || cacheCreate > 0) ? { prompt_tokens_details: {
               ...(cacheRead > 0 ? { cached_tokens: cacheRead } : {}),
-              ...(cacheCreate > 0 ? { cache_creation_tokens: cacheCreate } : {}) } }
-        : {};
+              ...(cacheCreate > 0 ? { cache_creation_tokens: cacheCreate } : {}) } } : {}),
+        ...(reasoning > 0 ? { completion_tokens_details: { reasoning_tokens: reasoning } } : {})
+      };
       let finalResp;
 
       // Extract tool calls from Responses API output (function_call items)

@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
+import { resolveCliApiKey } from "../resolveApiKey.js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -140,10 +141,13 @@ export async function POST(request) {
       modelList = [{ id: modelId, name: modelId, contextWindow: 128000, maxTokens: 16384 }];
     }
 
+    const existingProvider = existing.providers?.["9router"] || {};
+
     existing.providers["9router"] = {
+      ...existingProvider,
       baseUrl: normalizedBaseUrl,
-      apiKey: apiKey || "sk_9router",
-      api: "openai-completions",
+      apiKey: await resolveCliApiKey(apiKey, existingProvider.apiKey),
+      api: existingProvider.api || "openai-completions",
       models: modelList,
     };
 
