@@ -22,7 +22,7 @@ export function openaiToClaudeRequest(model, body, stream) {
   const modelCeiling = getCapabilitiesForModel(null, model).maxOutput || undefined;
   const result = {
     model: model,
-    max_tokens: adjustMaxTokens(body, modelCeiling),
+    max_tokens: adjustMaxTokens(body, modelCeiling, true),
     stream: stream
   };
 
@@ -173,7 +173,8 @@ Respond ONLY with the JSON object, no other text.`);
       result.tools.push({
         name: toolName,
         description: toolData.description || "",
-        input_schema: toolData.parameters || toolData.input_schema || { type: "object", properties: {}, required: [] }
+        input_schema: toolData.parameters || toolData.input_schema || { type: "object", properties: {}, required: [] },
+        ...(typeof toolData.strict === "boolean" ? { strict: toolData.strict } : {})
       });
     }
 
@@ -185,6 +186,10 @@ Respond ONLY with the JSON object, no other text.`);
   // Tool choice
   if (body.tool_choice) {
     result.tool_choice = convertOpenAIToolChoice(body.tool_choice);
+  }
+
+  if (body.parallel_tool_calls === false && result.tools?.length) {
+    result.tool_choice = { ...(result.tool_choice || { type: "auto" }), disable_parallel_tool_use: true };
   }
 
   // Thinking is normalized centrally by applyThinking (thinkingUnified.js) after translation.
@@ -303,8 +308,9 @@ function convertOpenAIToolChoice(choice) {
 
   // OpenAI string forms: "auto" | "none" | "required"
   if (typeof choice === "string") {
+    if (choice === "none") return { type: "none" };
     if (choice === "required") return { type: "any" };
-    return { type: "auto" }; // "auto", "none", or anything unexpected
+    return { type: "auto" }; // "auto" or anything unexpected
   }
 
   if (typeof choice === "object") {

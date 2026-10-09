@@ -71,7 +71,8 @@ export function claudeToOpenAIRequest(model, body, stream) {
       function: {
         name: tool.name,
         description: String(tool.description || ""),
-        parameters: tool.input_schema || { type: "object", properties: {} }
+        parameters: tool.input_schema || { type: "object", properties: {} },
+        ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {})
       }
     }));
   }
@@ -79,6 +80,7 @@ export function claudeToOpenAIRequest(model, body, stream) {
   // Tool choice
   if (body.tool_choice) {
     result.tool_choice = convertToolChoice(body.tool_choice);
+    if (body.tool_choice.disable_parallel_tool_use === true) result.parallel_tool_calls = false;
   }
 
   if (body.reasoning_effort !== undefined) {
@@ -276,6 +278,7 @@ function convertToolChoice(choice) {
   if (typeof choice === "string") return choice;
 
   switch (choice.type) {
+    case "none": return "none";
     case "auto": return "auto";
     case "any": return "required";
     case "tool": return { type: OPENAI_BLOCK.FUNCTION, function: { name: choice.name } };
