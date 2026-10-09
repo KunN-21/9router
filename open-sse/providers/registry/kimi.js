@@ -1,3 +1,4 @@
+/* eslint-disable import/no-anonymous-default-export */
 import { CLAUDE_API_HEADERS } from "../shared.js";
 
 // Dual auth (same pattern as xai): OAuth = Kimi Code subscription (device code),
@@ -51,6 +52,12 @@ export default {
       urlSuffix: "?beta=true",
       headers: { ...CLAUDE_API_HEADERS },
       auth: { combined: true, header: "x-api-key", scheme: "raw", hooks: ["kimiHeaders"] },
+    },
+    // Kimi Code natively serves the OpenAI Responses API (Codex wire_api = "responses").
+    {
+      format: "openai-responses",
+      baseUrl: "https://api.kimi.com/coding/v1/responses",
+      auth: { combined: true, header: "Authorization", scheme: "bearer", hooks: ["kimiHeaders"] },
     },
   ],
   models: [
