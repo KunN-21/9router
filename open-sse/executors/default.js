@@ -68,10 +68,21 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body, stream, credentials) {
+  transformRequest(model, body, stream = false, credentials = null) {
     const transformed = this.applyJsonSchemaFallback(body);
 
     if (transformed && typeof transformed === "object") {
+      // Ask the upstream for usage on SSE. Without include_usage OpenAI-compatible
+      // gateways (Alibaba MaaS etc.) omit the final usage chunk, and the stream
+      // path falls back to chars/4 estimation — inflating prompt_tokens and
+      // dropping cached_tokens entirely, so cache hits are billed at full rate.
+      // Custom executors that reject the field (codex, grok-cli, antigravity)
+      // delete it themselves; only the OpenAI-compatible chat path is touched.
+      if (stream === true && this.provider?.startsWith?.("openai-compatible-")
+        && resolveOpenAICompatibleApiType(this.provider, credentials) === "chat"
+        && Array.isArray(transformed.messages) && !transformed.stream_options) {
+        transformed.stream_options = { include_usage: true };
+      }
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
       if (this.config.quirks?.dropClientMetadata) {
         delete transformed.client_metadata;
