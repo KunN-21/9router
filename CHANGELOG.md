@@ -1,3 +1,15 @@
+# v0.5.99-local.1 (2026-10-09)
+
+- Tích hợp chọn lọc upstream 0.5.99 và các PR đã review; không merge toàn bộ upstream.
+- Gemini: ghép tool-call/result trùng ID theo FIFO, chống prototype collisions và giữ response keys khi sanitization trùng tên. Kimi bổ sung Responses transport.
+- Usage/pricing: giữ Ollama cached-token accounting, fallback pricing cho effort suffix, cache compiled regex và streaming include_usage. Forced SSE-to-JSON giữ cached và reasoning token details.
+- GLM/Muse: cập nhật capability, native effort clamp và nested Responses reasoning. Stream bị bỏ qua mặc định JSON cho provider không bắt buộc stream; không mutate body của caller.
+- Generic pivot: giữ strict tools, tool_choice none, single-tool policy, explicit positive token caps cùng model ceilings và service-tier mapping.
+- Responses: chờ usage trailer có watchdog 3s, chặn completion sau lỗi và late deltas, dọn timer. Codex image usage ghi nhận chính xác cả lượt không trả ảnh.
+- CLI: gắn server listeners trước tray, dedupe restart mỗi child và không spawn sau shutdown. API-key fallback fail-closed khi DB lỗi; Pi giữ key và wire format hợp lệ hiện có.
+- Bảo toàn custom Codex–9Router–Claude Code direct translation, done-only reasoning, dedupe, tool_choice none và cache-inclusive accounting. Giữ connect 60s, first-content 200s, Claude stall 240s, upstream stall 360s và keepalive 15s. Không thêm Codex max_output_tokens limiter.
+- Gate tích hợp trước đóng gói: 61 suites, 740 tests pass, 6 failures trùng exact baseline, không có failure mới; toàn bộ 185 tests mới pass. ESLint kiểm tra 51 file đạt. Không kiểm thử live provider.
+
 # v0.5.91-local.4 (2026-10-07)
 
 - Bảo toàn và khử trùng lặp reasoning: xử lý đầy đủ các sự kiện done-only cho reasoning (`response.reasoning_text.done`, `response.reasoning_summary_text.done`, `response.output_item.done`), tự động dedupe và validate phần bù nội dung đối với các delta đã stream trước đó.
