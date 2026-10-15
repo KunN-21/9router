@@ -314,23 +314,48 @@ export function shouldRefreshZedLlmToken(response) {
   );
 }
 
+function extractHeadersDict(headers) {
+  if (!headers || typeof headers !== "object") return {};
+  if (typeof headers.entries === "function") {
+    return Object.fromEntries(headers.entries());
+  }
+  return { ...headers };
+}
+
+function hasAuthHeader(headers) {
+  if (!headers || typeof headers !== "object") return false;
+  if (typeof headers.has === "function") {
+    return headers.has("authorization");
+  }
+  return Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+}
+
 export async function zedLlmFetch(credentials, path, options = {}) {
   const config = options.config || {};
   const url = zedUrl(config, "llmBaseUrl", path, ZED_LLM_BASE_URL);
+  const rawHeaders = options.fetchOptions?.headers;
+  const hasAuthOverride = hasAuthHeader(rawHeaders);
+
   const buildRequest = async (forceRefresh) => {
-    const token = await fetchZedLlmToken(credentials, { ...options, forceRefresh });
+    const finalHeaders = extractHeadersDict(rawHeaders);
+    if (!hasAuthOverride) {
+      const token = await fetchZedLlmToken(credentials, { ...options, forceRefresh });
+      finalHeaders.Authorization = `Bearer ${token}`;
+    }
+
+    if (typeof options.onDispatchedHeaders === "function") {
+      options.onDispatchedHeaders(finalHeaders);
+    }
+
     return proxyAwareFetch(url, {
       ...options.fetchOptions,
-      headers: {
-        ...(options.fetchOptions?.headers || {}),
-        Authorization: `Bearer ${token}`,
-      },
+      headers: finalHeaders,
       signal: options.signal ?? undefined,
     });
   };
 
   let response = await buildRequest(false);
-  if (shouldRefreshZedLlmToken(response)) {
+  if (!hasAuthOverride && shouldRefreshZedLlmToken(response)) {
     response = await buildRequest(true);
   }
   return response;

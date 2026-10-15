@@ -62,6 +62,7 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  providerOverrides: {},
 };
 
 async function readRaw() {
@@ -145,4 +146,51 @@ export async function getCloudUrl() {
 
 export async function exportSettings() {
   return await readRaw();
+}
+
+// Atomic update of provider-level custom header overrides inside a SQLite transaction
+export async function updateProviderOverride(canonicalProvider, overrides) {
+  const db = await getAdapter();
+  let next;
+  db.transaction(function () {
+    const row = db.get("SELECT data FROM settings WHERE id = 1");
+    const current = row ? parseJson(row.data, {}) : {};
+    const currentOverrides = (current.providerOverrides && typeof current.providerOverrides === "object")
+      ? { ...current.providerOverrides }
+      : {};
+
+    if (!overrides || Object.keys(overrides).length === 0) {
+      if (currentOverrides[canonicalProvider]) {
+        const providerSlice = { ...currentOverrides[canonicalProvider] };
+        delete providerSlice.headers;
+        if (Object.keys(providerSlice).length === 0) {
+          delete currentOverrides[canonicalProvider];
+        } else {
+          currentOverrides[canonicalProvider] = providerSlice;
+        }
+      }
+    } else {
+      const providerSlice = {
+        ...(currentOverrides[canonicalProvider] || {}),
+      };
+      const newHeaders = {};
+      for (const [k, v] of Object.entries(overrides)) {
+        Object.defineProperty(newHeaders, k, {
+          value: v,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      providerSlice.headers = newHeaders;
+      currentOverrides[canonicalProvider] = providerSlice;
+    }
+
+    next = { ...current, providerOverrides: currentOverrides };
+    db.run(
+      "INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+      [stringifyJson(next)]
+    );
+  });
+  return mergeWithDefaults(next);
 }

@@ -1,4 +1,4 @@
-export default {
+const opencode = {
   id: "opencode",
   priority: 40,
   hasFree: true,
@@ -15,7 +15,7 @@ export default {
   transport: {
     baseUrl: "https://opencode.ai",
     headers: {
-      "x-opencode-client": "desktop",
+      "x-opencode-client": "cli",
     },
     forceStream: true,
     noAuth: true,
@@ -25,7 +25,7 @@ export default {
     },
   },
   transports: [
-    { format: "openai-responses", baseUrl: "https://opencode.ai/zen/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+    { format: "openai-responses", baseUrl: "https://opencode.ai/inference/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
   ],
   models: [
     { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor Free", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -37,10 +37,12 @@ export default {
   systemoneConfig: {
     baseUrl: "https://opencode.ai/zen/v1/systemone",
     headers: {
-      "x-opencode-client": "desktop",
-      "User-Agent": "opencode/1.18.31",
+      "x-opencode-client": "cli",
+      "User-Agent": "opencode/1.18.35",
     },
   },
   modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" },
   passthroughModels: true,
 };
+
+export default opencode;

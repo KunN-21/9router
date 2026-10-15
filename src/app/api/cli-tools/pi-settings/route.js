@@ -49,6 +49,37 @@ const has9RouterConfig = (settings) => {
   return false;
 };
 
+const isPositiveSafeInteger = (v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+const DEFAULT_CONTEXT_WINDOW = 128000;
+const DEFAULT_MAX_TOKENS = 16384;
+
+// Id đã trim của một entry models, cho cả chuỗi lẫn object. Chuỗi nơi nào cũng là id.
+const piModelId = (item) => (typeof item === "string" ? item.trim()
+  : item && typeof item.id === "string" ? item.id.trim() : "");
+
+// Ghép một model Pi vào entry đã lưu cùng id. Chuỗi incoming chuẩn hoá thành `{ id: incoming }`
+// rồi chạy chung một đường validate/default với object: kế thừa toàn bộ metadata prev,
+// field thiếu lấy default. Chuỗi mới (chưa có prev) ra `{ id, name: id,
+// contextWindow: 128000, maxTokens: 16384 }`; chuỗi đã có prev giữ nguyên toàn bộ prev.
+// Object: field explicit thắng kể cả `128000`, field thiếu kế thừa.
+// Id rỗng/limit invalid trả `null` để route trả `400`, không ghi file.
+// ponytail: body đến qua request.json() nên `undefined` không đi qua wire; spread chỉ
+// tạo own property và không viết prototype. Xem lại nếu thêm caller không phải JSON.
+function mergePiModelEntry(incoming, prev) {
+  const base = prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {};
+  const item = typeof incoming === "string" ? { id: incoming } : incoming;
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const id = piModelId(item);
+  if (!id) return null;
+  if (item.contextWindow !== undefined && !isPositiveSafeInteger(item.contextWindow)) return null;
+  if (item.maxTokens !== undefined && !isPositiveSafeInteger(item.maxTokens)) return null;
+  const merged = { ...base, ...item, id };
+  if (typeof merged.name !== "string" || !merged.name.trim()) merged.name = id;
+  if (!isPositiveSafeInteger(merged.contextWindow)) merged.contextWindow = DEFAULT_CONTEXT_WINDOW;
+  if (!isPositiveSafeInteger(merged.maxTokens)) merged.maxTokens = DEFAULT_MAX_TOKENS;
+  return merged;
+}
+
 const resolveModelsJsonPath = async () => {
   const agentPath = getPiModelsJsonPath();
   const rootPath = path.join(os.homedir(), ".pi", "models.json");
@@ -123,25 +154,38 @@ export async function POST(request) {
     if (!existing.providers) existing.providers = {};
 
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
-    let modelList = [];
-    if (Array.isArray(rawBody.models) && rawBody.models.length > 0) {
-      modelList = rawBody.models.map((m) => {
-        if (typeof m === "string") {
-          return { id: m, name: m, contextWindow: 128000, maxTokens: 16384 };
-        }
-        return {
-          id: m.id || "provider/model-id",
-          name: m.name || m.id || "provider/model-id",
-          contextWindow: m.contextWindow || 128000,
-          maxTokens: m.maxTokens || 16384,
-        };
-      });
-    } else {
-      const modelId = model || "provider/model-id";
-      modelList = [{ id: modelId, name: modelId, contextWindow: 128000, maxTokens: 16384 }];
+    const existingProvider = existing.providers?.["9router"] || {};
+
+    const prevModels = new Map();
+    for (const item of Array.isArray(existingProvider.models) ? existingProvider.models : []) {
+      const prevId = piModelId(item);
+      if (prevId && !prevModels.has(prevId)) prevModels.set(prevId, item);
     }
 
-    const existingProvider = existing.providers?.["9router"] || {};
+    const rawItems = Array.isArray(rawBody.models) && rawBody.models.length > 0
+      ? rawBody.models
+      : (typeof model === "string" && model.trim() ? [model.trim()] : []);
+
+    const modelList = [];
+    for (const item of rawItems) {
+      const merged = mergePiModelEntry(item, prevModels.get(piModelId(item)));
+      if (!merged) {
+        return NextResponse.json(
+          { error: { message: "Each model needs a non-empty id and a positive integer contextWindow/maxTokens" } },
+          { status: 400 },
+        );
+      }
+      modelList.push(merged);
+    }
+
+    if (modelList.length === 0) {
+      modelList.push({
+        id: "provider/model-id",
+        name: "provider/model-id",
+        contextWindow: DEFAULT_CONTEXT_WINDOW,
+        maxTokens: DEFAULT_MAX_TOKENS,
+      });
+    }
 
     existing.providers["9router"] = {
       ...existingProvider,

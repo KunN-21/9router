@@ -2,6 +2,7 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { parseVertexSaJson, refreshVertexToken, refreshGoogleToken } from "../services/tokenRefresh.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 
 // Cache project IDs resolved from raw API keys { apiKey → projectId }
 const projectIdCache = new Map();
@@ -128,7 +129,7 @@ export class VertexExecutor extends BaseExecutor {
     return { accessToken: result.accessToken, expiresAt: result.expiresAt };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null }) {
     const saJson = parseVertexSaJson(credentials?.apiKey);
     const adcJson = parseVertexAdcJson(credentials?.apiKey);
 
@@ -160,7 +161,8 @@ export class VertexExecutor extends BaseExecutor {
     }
 
     const url = this.buildUrl(model, stream, 0, credentials);
-    const headers = this.buildHeaders(credentials, stream);
+    const baseHeaders = this.buildHeaders(credentials, stream);
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
 
     const response = await proxyAwareFetch(url, {

@@ -21,8 +21,8 @@ describe("OpenCodeExecutor fingerprint (free-tier 429 fix)", () => {
 
   it("passes through a real opencode downstream User-Agent untouched", () => {
     const ex = new OpenCodeExecutor();
-    const headers = ex.buildHeaders({ rawHeaders: { "user-agent": "opencode/1.18.18" } });
-    expect(headers["User-Agent"]).toBe("opencode/1.18.18");
+    const headers = ex.buildHeaders({ rawHeaders: { "user-agent": "opencode/latest/2.0.29/desktop" } });
+    expect(headers["User-Agent"]).toBe("opencode/latest/2.0.29/desktop");
   });
 
   it("forwards the sanitized peer IP as x-real-ip for per-IP quota buckets", () => {
@@ -124,8 +124,8 @@ describe("OpenCodeExecutor fingerprint (free-tier 429 fix)", () => {
 
     const out = ex.transformRequest("muse-spark-1.2-contributor-free", body, true, {});
 
-    expect(out.tools.map((tool) => tool.name)).toEqual([prefix, "bash", "glob", "grep", "read"]);
-    expect(out.tool_choice).toBeUndefined();
+    expect(out.tools.map((tool) => tool.name)).toEqual([prefix, "read", "shell"]);
+    expect(out.tool_choice).toBe("auto");
   });
 });
 
@@ -217,7 +217,7 @@ describe("OpenCodeExecutor upstream retry and metadata", () => {
     const text = JSON.stringify(metadata);
     expect(text).toContain("muse-spark-1.3-contributor-free");
     expect(text).toContain("200");
-    expect(text).toContain("opencode.ai/zen/v1/responses");
+    expect(text).toContain("opencode.ai/inference/v1/responses");
     expect(text).toContain("bodyBytes");
     expect(text).not.toContain("secret prompt");
     expect(text).not.toContain("session-secret");
@@ -227,20 +227,22 @@ describe("OpenCodeExecutor upstream retry and metadata", () => {
   });
 });
 describe("OpenCodeExecutor.buildUrl (runtimeTransport)", () => {
-  it("uses runtimeTransport baseUrl when present (free Responses model)", () => {
+  // PR #4860: free Responses models pin to /inference/v1 so a stale registry transport
+  // cannot send them back to the retired /zen/v1 endpoint, which answers 403.
+  it("pins free Responses models to /inference/v1 even when runtimeTransport says /zen/v1", () => {
     const ex = new OpenCodeExecutor();
     const url = ex.buildUrl("muse-spark-1.2-contributor-free", true, 0, { runtimeTransport: { baseUrl: "https://opencode.ai/zen/v1/responses" } });
-    expect(url).toBe("https://opencode.ai/zen/v1/responses");
+    expect(url).toBe("https://opencode.ai/inference/v1/responses");
   });
 
-  it("appends urlSuffix when runtimeTransport carries one", () => {
+  it("appends urlSuffix when runtimeTransport carries one (chat model)", () => {
     const ex = new OpenCodeExecutor();
-    const url = ex.buildUrl("muse-spark-1.2-contributor-free", true, 0, { runtimeTransport: { baseUrl: "https://opencode.ai/zen/v1", urlSuffix: "/responses" } });
-    expect(url).toBe("https://opencode.ai/zen/v1/responses");
+    const url = ex.buildUrl("big-pickle", true, 0, { runtimeTransport: { baseUrl: "https://opencode.ai/zen/v1", urlSuffix: "/chat/completions" } });
+    expect(url).toBe("https://opencode.ai/zen/v1/chat/completions");
   });
 
-  it("keeps /zen/v1/chat/completions for models without a runtime transport", () => {
+  it("keeps /inference/v1/chat/completions for models without a runtime transport", () => {
     const ex = new OpenCodeExecutor();
-    expect(ex.buildUrl("deepseek-v4-flash", true, 0, {})).toBe("https://opencode.ai/zen/v1/chat/completions");
+    expect(ex.buildUrl("deepseek-v4-flash", true, 0, {})).toBe("https://opencode.ai/inference/v1/chat/completions");
   });
 });

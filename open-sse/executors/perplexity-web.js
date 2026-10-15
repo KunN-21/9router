@@ -2,6 +2,7 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { sseChunk } from "../utils/sse.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 
 const PPLX_SSE_ENDPOINT = PROVIDERS["perplexity-web"].baseUrl;
 const PPLX_API_VERSION = "2.18";
@@ -393,7 +394,7 @@ export class PerplexityWebExecutor extends BaseExecutor {
     super("perplexity-web", PROVIDERS["perplexity-web"]);
   }
 
-  async execute({ model, body, stream, credentials, signal, log }) {
+  async execute({ model, body, stream, credentials, signal, log, providerOverrides = null }) {
     const messages = body?.messages;
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       const errResp = new Response(JSON.stringify({
@@ -448,9 +449,11 @@ export class PerplexityWebExecutor extends BaseExecutor {
       headers["Cookie"] = `__Secure-next-auth.session-token=${credentials.apiKey}`;
     }
 
+    const finalHeaders = applyHeaderOverrides(headers, providerOverrides?.headers);
+
     log?.info?.("PPLX-WEB", `Query to ${model} (pref=${modelPref}, mode=${pplxMode}), len=${query.length}`);
 
-    const fetchOptions = { method: "POST", headers, body: JSON.stringify(pplxBody) };
+    const fetchOptions = { method: "POST", headers: finalHeaders, body: JSON.stringify(pplxBody) };
     if (signal) fetchOptions.signal = signal;
 
     let response;
@@ -461,7 +464,7 @@ export class PerplexityWebExecutor extends BaseExecutor {
       const errResp = new Response(JSON.stringify({
         error: { message: `Perplexity connection failed: ${err.message || String(err)}`, type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
-      return { response: errResp, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
+      return { response: errResp, url: PPLX_SSE_ENDPOINT, headers: finalHeaders, transformedBody: pplxBody };
     }
 
     if (!response.ok) {
@@ -473,14 +476,14 @@ export class PerplexityWebExecutor extends BaseExecutor {
       const errResp = new Response(JSON.stringify({
         error: { message: errMsg, type: "upstream_error", code: `HTTP_${status}` },
       }), { status, headers: { "Content-Type": "application/json" } });
-      return { response: errResp, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
+      return { response: errResp, url: PPLX_SSE_ENDPOINT, headers: finalHeaders, transformedBody: pplxBody };
     }
 
     if (!response.body) {
       const errResp = new Response(JSON.stringify({
         error: { message: "Perplexity returned empty response body", type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
-      return { response: errResp, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
+      return { response: errResp, url: PPLX_SSE_ENDPOINT, headers: finalHeaders, transformedBody: pplxBody };
     }
 
     const cid = `chatcmpl-pplx-${crypto.randomUUID().slice(0, 12)}`;
@@ -496,7 +499,7 @@ export class PerplexityWebExecutor extends BaseExecutor {
     } else {
       finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal);
     }
-    return { response: finalResponse, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
+    return { response: finalResponse, url: PPLX_SSE_ENDPOINT, headers: finalHeaders, transformedBody: pplxBody };
   }
 }
 

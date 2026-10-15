@@ -20,9 +20,9 @@ function route(model, sourceFormat) {
 }
 
 describe("OpenCode Free routing matrix", () => {
-  const RESPONSES_URL = "https://opencode.ai/zen/v1/responses";
-  const MESSAGES_URL = "https://opencode.ai/zen/v1/messages";
-  const CHAT_URL = "https://opencode.ai/zen/v1/chat/completions";
+  const RESPONSES_URL = "https://opencode.ai/inference/v1/responses";
+  const MESSAGES_URL = "https://opencode.ai/inference/v1/messages";
+  const CHAT_URL = "https://opencode.ai/inference/v1/chat/completions";
 
   describe("Muse Spark 1.2 Free", () => {
     for (const suffix of ["", "(high)"]) {

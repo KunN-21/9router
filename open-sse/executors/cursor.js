@@ -18,6 +18,7 @@ import { chatChunkSse, sseChunk } from "../utils/sse.js";
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 import zlib from "zlib";
 import crypto from "crypto";
 
@@ -86,6 +87,19 @@ export function isAgentCapableRequest(body) {
     if (Array.isArray(message?.content)) return message.content.every(isTextPart);
     return message?.content == null || typeof message.content === "string";
   });
+}
+
+function proxyIntentFailed(p) {
+  if (p?.strictProxy !== true) return false;
+  return Boolean(
+    p.proxyPoolId ||
+      p.enabled === true ||
+      p.connectionProxyEnabled === true ||
+      (typeof p.url === "string" && p.url.trim()) ||
+      (typeof p.connectionProxyUrl === "string" &&
+        p.connectionProxyUrl.trim()) ||
+      (typeof p.vercelRelayUrl === "string" && p.vercelRelayUrl.trim())
+  );
 }
 
 function encodeHistoryMessage(message) {
@@ -548,12 +562,18 @@ export class CursorExecutor extends BaseExecutor {
     };
   }
 
-  async executeAgent({ model, body, stream, credentials, signal, log }) {
+  async executeAgent({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null }) {
+    if (proxyIntentFailed(proxyOptions)) {
+      throw new Error(
+        "Cursor AgentService requires a strict proxy that this HTTP/2 transport cannot honor; refusing to open a direct connection"
+      );
+    }
     const agentEndpoint = PROVIDER_OAUTH.cursor?.agentEndpoint;
     if (!agentEndpoint) throw new Error("Cursor AgentService endpoint is not configured");
 
     const url = `${agentEndpoint}${AGENT_RUN_PATH}`;
-    const headers = this.buildHeaders(credentials);
+    const baseHeaders = this.buildHeaders(credentials);
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
     const requestController = new AbortController();
     if (signal?.addEventListener) {
       signal.addEventListener("abort", () => requestController.abort(signal.reason), { once: true });
@@ -838,10 +858,10 @@ export class CursorExecutor extends BaseExecutor {
     };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null }) {
     if (isAgentCapableRequest(body)) {
       try {
-        return await this.executeAgent({ model, body, stream, credentials, signal, log });
+        return await this.executeAgent({ model, body, stream, credentials, signal, log, proxyOptions, providerOverrides });
       } catch (error) {
         return {
           response: new Response(JSON.stringify({
@@ -855,7 +875,8 @@ export class CursorExecutor extends BaseExecutor {
     }
 
     const url = this.buildUrl();
-    const headers = this.buildHeaders(credentials);
+    const baseHeaders = this.buildHeaders(credentials);
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
 
     try {

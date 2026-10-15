@@ -1,3 +1,6 @@
+import { translateRequest } from "../../open-sse/translator/index.js";
+import { FORMATS } from "../../open-sse/translator/formats.js";
+import { claudeToResponsesRequest } from "../../open-sse/translator/request/claude-to-responses.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
 import * as proxyFetchModule from "../../open-sse/utils/proxyFetch.js";
@@ -185,5 +188,139 @@ describe("Codex reasoning normalization", () => {
 
     expect(body.model).toBe("gpt-5.6-terra");
     expect(body.reasoning.effort).toBe("ultra");
+  });
+});
+
+describe("Direct Route Wire Bridge for Codex", () => {
+  it("preserves priority through direct claudeToResponsesRequest", () => {
+    const srcPayload = {
+      model: "gpt-6.1-sol",
+      service_tier: "priority",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const translated = claudeToResponsesRequest("gpt-6.1-sol", srcPayload, true, null);
+    expect(translated.service_tier).toBe("priority");
+  });
+
+  it("preserves fast through direct claudeToResponsesRequest for Codex normalization", () => {
+    const srcPayload = {
+      model: "gpt-6.1-sol",
+      service_tier: "fast",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const translated = claudeToResponsesRequest("gpt-6.1-sol", srcPayload, true, null);
+    expect(translated.service_tier).toBe("fast");
+
+    const executor = new CodexExecutor();
+    const transformed = executor.transformRequest("gpt-6.1-sol", translated, true, {});
+    expect(transformed.service_tier).toBe("priority");
+  });
+
+  it("preserves explicit supported and unsupported values without auto-upgrading", () => {
+    for (const tier of ["standard", "flex", "scale", "custom_tier"]) {
+      const srcPayload = {
+        model: "gpt-6.1-sol",
+        service_tier: tier,
+        messages: [{ role: "user", content: "Hello" }],
+      };
+      const translated = claudeToResponsesRequest("gpt-6.1-sol", srcPayload, true, null);
+      expect(translated.service_tier).toBe(tier);
+    }
+  });
+
+  it("does not inject service_tier when key is absent", () => {
+    const srcPayload = {
+      model: "gpt-6.1-sol",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const translated = claudeToResponsesRequest("gpt-6.1-sol", srcPayload, true, null);
+    expect(translated).not.toHaveProperty("service_tier");
+    expect(translated.service_tier).toBeUndefined();
+  });
+
+  it("keeps caller request body unchanged (immutability)", () => {
+    const srcPayload = {
+      model: "gpt-6.1-sol",
+      service_tier: "priority",
+      messages: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
+      max_tokens: 1000,
+    };
+    const snapshot = JSON.parse(JSON.stringify(srcPayload));
+    claudeToResponsesRequest("gpt-6.1-sol", srcPayload, true, null);
+    expect(srcPayload).toEqual(snapshot);
+  });
+
+  it("preserves service_tier via public translateRequest for gpt-family and muse-spark routes", () => {
+    const gptPayload = {
+      model: "gpt-6.1-sol",
+      service_tier: "priority",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const gptOut = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.OPENAI_RESPONSES,
+      "gpt-6.1-sol",
+      gptPayload,
+      true,
+      null
+    );
+    expect(gptOut.service_tier).toBe("priority");
+    expect(gptOut.model).toBe("gpt-6.1-sol");
+
+    const musePayload = {
+      model: "muse-spark-1.3-contributor-free",
+      service_tier: "priority",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const museOut = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.OPENAI_RESPONSES,
+      "muse-spark-1.3-contributor-free",
+      musePayload,
+      true,
+      null
+    );
+    expect(museOut.service_tier).toBe("priority");
+    expect(museOut.model).toBe("muse-spark-1.3-contributor-free");
+  });
+
+  it("does not inject premium or priority default on non-Codex providers", () => {
+    const regularPayload = {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const regularOut = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.OPENAI,
+      "gpt-4o",
+      regularPayload,
+      true,
+      null,
+      "openai"
+    );
+    expect(regularOut.service_tier).toBeUndefined();
+
+    const autoPayload = {
+      model: "gpt-4o",
+      service_tier: "auto",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 1000,
+    };
+    const autoOut = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.OPENAI,
+      "gpt-4o",
+      autoPayload,
+      true,
+      null,
+      "openai"
+    );
+    expect(autoOut.service_tier).not.toBe("priority");
   });
 });

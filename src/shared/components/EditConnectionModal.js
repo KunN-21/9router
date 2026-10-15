@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
 import { useState, useEffect } from "react";
@@ -10,11 +11,11 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS
 import Select from "@/shared/components/Select";
 
 export default function EditConnectionModal({ isOpen, connection, proxyPools, onSave, onClose }) {
-  const [formData, setFormData] = useState({
-    name: "",
-    priority: 1,
+  const [formData, setFormData] = useState(() => ({
+    name: connection?.name || "",
+    priority: connection?.priority || 1,
     apiKey: "",
-  });
+  }));
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -23,11 +24,15 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   });
   const [cloudflareData, setCloudflareData] = useState({ accountId: "" });
   const [region, setRegion] = useState("");
+  const [codexFastMode, setCodexFastMode] = useState(
+    () => connection?.provider === "codex" && connection?.providerSpecificData?.codexFastMode === true
+  );
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   useEffect(() => {
     if (connection) {
@@ -36,6 +41,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         priority: connection.priority || 1,
         apiKey: "",
       });
+      setCodexFastMode(connection.provider === "codex" && connection.providerSpecificData?.codexFastMode === true);
+      setSaveError(null);
       // Load Azure-specific data if present
       if (connection.provider === "azure" && connection.providerSpecificData) {
         setAzureData({
@@ -60,6 +67,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   }, [connection]);
 
   const isOAuth = connection?.authType === "oauth";
+  const isCodex = connection?.provider === "codex";
   const isAzure = connection?.provider === "azure";
   const isCloudflareAi = connection?.provider === "cloudflare-ai";
   const isCompatible = connection
@@ -116,11 +124,16 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   const handleSubmit = async () => {
     if (!connection) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const updates = {
         name: formData.name,
         priority: formData.priority,
       };
+      if (isCodex) {
+        const persistedFast = connection.providerSpecificData?.codexFastMode === true;
+        updates.codexFastMode = connection.isActive === false ? persistedFast : codexFastMode === true;
+      }
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
         let isValid = validationResult === "success";
@@ -173,6 +186,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       }
       
       await onSave(updates);
+    } catch (err) {
+      setSaveError(err.message || "Failed to save connection");
     } finally {
       setSaving(false);
     }
@@ -201,6 +216,22 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
         />
+
+        {isCodex && (
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 cursor-pointer text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={codexFastMode}
+                onChange={(e) => setCodexFastMode(e.target.checked)}
+                disabled={saving || connection.isActive === false}
+                className="rounded border-accent/20"
+              />
+              <span>Codex Fast Mode</span>
+            </label>
+            <p className="text-xs text-text-muted">Priority tier upstream; may consume extra quota. Account default applies when request omits speed; /fast OFF may not disable it.</p>
+          </div>
+        )}
 
         {!isOAuth && (
           <>
@@ -283,6 +314,12 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
                 {testResult === "success" ? "Valid" : "Failed"}
               </Badge>
             )}
+          </div>
+        )}
+
+        {saveError && (
+          <div role="alert" className="p-2 text-sm text-red-500 bg-red-500/10 rounded border border-red-500/20">
+            {saveError}
           </div>
         )}
 

@@ -1,4 +1,4 @@
-export default {
+const opencodeZen = {
   id: "opencode-zen",
   priority: 205,
   alias: "ocz",
@@ -122,8 +122,8 @@ export default {
   systemoneConfig: {
     baseUrl: "https://opencode.ai/zen/v1/systemone",
     headers: {
-      "x-opencode-client": "desktop",
-      "User-Agent": "opencode/1.18.31",
+      "x-opencode-client": "cli",
+      "User-Agent": "opencode/1.18.35",
     },
   },
   modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" },
@@ -133,3 +133,5 @@ export default {
     usageApikey: true,
   },
 };
+
+export default opencodeZen;

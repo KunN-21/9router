@@ -162,6 +162,9 @@ export function fixToolUseOrdering(messages) {
 
 // Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
 const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
+// Exact-model carve-out: opencode-go serves claude-haiku-5-5 on the Messages
+// route with adaptive thinking. Broad /haiku/i baseline stays for other Haiku.
+const ADAPTIVE_THINKING_SUPPORTED_MODELS = new Set(["claude-haiku-5-5"]);
 
 function handlesThinkingBlocks(provider) {
   return provider === "claude" || provider?.startsWith("anthropic-compatible") || provider === "deepseek";
@@ -205,12 +208,14 @@ export function normalizeClaudePassthrough(body, model = "") {
   if (!body || typeof body !== "object") return body;
 
   // 1. Downgrade adaptive thinking for models that don't support it
-  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)
+    && !ADAPTIVE_THINKING_SUPPORTED_MODELS.has(String(model).trim())) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model) && body.output_config?.effort != null) {
+  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model)
+    && !ADAPTIVE_THINKING_SUPPORTED_MODELS.has(String(model).trim()) && body.output_config?.effort != null) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
@@ -269,7 +274,8 @@ export function normalizeClaudePassthrough(body, model = "") {
       const kept = [];
       for (const block of msg.content) {
         if (block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
-          if (isValidClaudeSignature(block.signature)) {
+          if (isValidClaudeSignature(block.signature)
+            && !(block.type === CLAUDE_BLOCK.THINKING && !String(block.thinking ?? "").trim())) {
             hasKeptThinking = true;
             kept.push(block);
           }
@@ -442,6 +448,9 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   if (PROVIDERS[provider]?.quirks?.dropOutputConfig) {
     delete body.output_config;
   }
+  // opencode-go's Messages endpoint rejects Anthropic's context_management
+  // (beta-only shape). Scoped to opencode-go — Codex/Antigravity keep it.
+  if (provider === "opencode-go" && body.context_management) delete body.context_management;
 
   // Clamp max_tokens to the model's real output ceiling. Models whose caps
   // declare a higher maxOutput (e.g. Opus 4.8 / Sonnet 4.6 = 128000) are allowed

@@ -96,4 +96,27 @@ describe("stripUnsupportedParams", () => {
 
     expect(body.messages[0].reasoning_content).toBe("thinking...");
   });
+  it.each(["gpt-5.4", "gpt-5.4-mini", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra"])(
+    "drops temperature for GitHub GPT-5.4+/6.x: %s",
+    (model) => {
+      const body = { temperature: 0.7, top_p: 1 };
+      stripUnsupportedParams("github", model, body);
+      expect(body).toEqual({ top_p: 1 });
+    },
+  );
+
+  it.each(["gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-4.1"])(
+    "keeps temperature for older GitHub models: %s",
+    (model) => {
+      const body = { temperature: 0.7, top_p: 1 };
+      stripUnsupportedParams("github", model, body);
+      expect(body).toEqual({ temperature: 0.7, top_p: 1 });
+    },
+  );
+
+  it("scopes the rule to github only", () => {
+    const body = { temperature: 0.7 };
+    stripUnsupportedParams("openai", "gpt-6.1-sol", body);
+    expect(body).toEqual({ temperature: 0.7 });
+  });
 });

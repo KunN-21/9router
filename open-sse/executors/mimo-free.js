@@ -1,6 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 import { createHash } from "crypto";
 import os from "os";
 
@@ -128,7 +129,7 @@ export class MimoFreeExecutor extends BaseExecutor {
     return injectSystemMarker(body);
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null }) {
     let jwt;
     try {
       jwt = await bootstrapJwt(proxyOptions);
@@ -139,7 +140,8 @@ export class MimoFreeExecutor extends BaseExecutor {
 
     const url = this.buildUrl();
     const transformedBody = this.transformRequest(model, body);
-    const headers = { ...this.buildHeaders(credentials, stream), "Authorization": `Bearer ${jwt}` };
+    const baseHeaders = { ...this.buildHeaders(credentials, stream), "Authorization": `Bearer ${jwt}` };
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
     const bodyStr = JSON.stringify(transformedBody);
     log?.debug?.("FETCH", `MIMO-FREE → ${url} | body=${bodyStr.length}B`);
 
@@ -150,9 +152,10 @@ export class MimoFreeExecutor extends BaseExecutor {
       log?.debug?.("AUTH", `MiMo auth failed (${response.status}), re-bootstrapping...`);
       resetJwtCache();
       jwt = await bootstrapJwt(proxyOptions);
-      headers["Authorization"] = `Bearer ${jwt}`;
-      const retryResponse = await proxyAwareFetch(url, { method: "POST", headers, body: bodyStr, signal }, proxyOptions);
-      return { response: retryResponse, url, headers, transformedBody };
+      const retryBaseHeaders = { ...this.buildHeaders(credentials, stream), "Authorization": `Bearer ${jwt}` };
+      const retryHeaders = applyHeaderOverrides(retryBaseHeaders, providerOverrides?.headers);
+      const retryResponse = await proxyAwareFetch(url, { method: "POST", headers: retryHeaders, body: bodyStr, signal }, proxyOptions);
+      return { response: retryResponse, url, headers: retryHeaders, transformedBody };
     }
 
     return { response, url, headers, transformedBody };

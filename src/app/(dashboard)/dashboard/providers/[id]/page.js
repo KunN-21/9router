@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -14,6 +15,7 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { useNotificationStore } from "@/store/notificationStore";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -23,6 +25,7 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
+import CustomConfigCard from "./CustomConfigCard";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -41,6 +44,9 @@ export default function ProviderDetailPage() {
   const providerId = params.id;
   const { getCaps } = useModelCaps();
   const [connections, setConnections] = useState([]);
+  const [updatingFastModeIds, setUpdatingFastModeIds] = useState({});
+
+  const isConnectionUpdatingFastMode = (id) => Boolean(updatingFastModeIds && updatingFastModeIds[id]);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
@@ -865,19 +871,28 @@ export default function ProviderDetailPage() {
   };
 
   const handleUpdateConnection = async (formData) => {
-    try {
-      const res = await fetch(`/api/providers/${selectedConnection.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      if (res.ok) {
-        await fetchConnections();
-        setShowEditModal(false);
-      }
-    } catch (error) {
-      console.log("Error updating connection:", error);
+    if (!selectedConnection?.id) return;
+    const connectionId = selectedConnection.id;
+    const res = await fetch(`/api/providers/${connectionId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formData),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || data.message || "Failed to update connection");
     }
+    if (
+      selectedConnection.provider === "codex" &&
+      formData.codexFastMode !== undefined &&
+      (!data?.connection ||
+        data.connection.id !== connectionId ||
+        typeof data.connection.providerSpecificData?.codexFastMode !== "boolean")
+    ) {
+      throw new Error("Malformed connection response from server");
+    }
+    await fetchConnections();
+    setShowEditModal(false);
   };
 
   const handleUpdateConnectionStatus = async (id, isActive) => {
@@ -892,6 +907,50 @@ export default function ProviderDetailPage() {
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
+    }
+  };
+
+  const handleFastModeConnection = async (connectionId, enabled) => {
+    if (isConnectionUpdatingFastMode(connectionId)) return;
+    const targetConn = connections.find((c) => c.id === connectionId);
+    if (!targetConn || targetConn.isActive === false) return;
+
+    setUpdatingFastModeIds((prev) => ({ ...(prev || {}), [connectionId]: true }));
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(connectionId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexFastMode: enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || "Failed to update Fast Mode");
+      }
+      if (
+        data?.connection &&
+        data.connection.id === connectionId &&
+        typeof data.connection.providerSpecificData?.codexFastMode === "boolean"
+      ) {
+        setConnections((prev) =>
+          prev.map((c) => (c.id === connectionId ? { ...c, ...data.connection } : c))
+        );
+      } else {
+        throw new Error("Malformed connection response from server");
+      }
+    } catch (error) {
+      console.log("Error updating Fast Mode:", error);
+      try {
+        useNotificationStore.getState().error(error.message || "Failed to update Fast Mode");
+      } catch {
+        if (typeof alert === "function") alert(error.message || "Failed to update Fast Mode");
+      }
+    } finally {
+      setUpdatingFastModeIds((prev) => {
+        if (!prev) return {};
+        const next = { ...prev };
+        delete next[connectionId];
+        return next;
+      });
     }
   };
 
@@ -1041,6 +1100,9 @@ export default function ProviderDetailPage() {
                 onMoveUp={() => handleSwapPriority(index, index - 1)}
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
+                isFastMode={conn.providerSpecificData?.codexFastMode === true}
+                updatingFastMode={isConnectionUpdatingFastMode(conn.id)}
+                onToggleFastMode={(enabled) => handleFastModeConnection(conn.id, enabled)}
                 autoPing={AUTO_PING_SETTINGS_KEYS[providerId] && conn.authType === "oauth" ? {
                   on: autoPing.connections[conn.id] === true,
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
@@ -1743,6 +1805,9 @@ export default function ProviderDetailPage() {
           )}
         </Card>
       )}
+
+      {/* Per-provider user overrides (custom headers / connect timeout) */}
+      <CustomConfigCard key={providerId} providerId={providerId} />
 
       {/* Models */}
       <Card>

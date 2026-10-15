@@ -1,6 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { PROVIDERS } from "../config/providers.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 
 // Trae executor — SOLO remote agent API.
 //
@@ -43,11 +44,11 @@ function flattenQuery(messages) {
 
 export default class TraeExecutor extends BaseExecutor {
   constructor() {
-    super("trae", PROVIDERS.trae);
+    super("trae", PROVIDERS.trae || {});
   }
 
   base() {
-    return (this.config.baseUrl || "https://core-normal.trae.ai/api/remote/v1").replace(/\/$/, "");
+    return (this.config?.baseUrl || "https://core-normal.trae.ai/api/remote/v1").replace(/\/$/, "");
   }
 
   buildHeaders(credentials, stream = true) {
@@ -173,8 +174,9 @@ export default class TraeExecutor extends BaseExecutor {
     }
   }
 
-  async execute({ model, body, stream, credentials, signal }) {
-    const headers = this.buildHeaders(credentials, stream !== false);
+  async execute({ model, body, stream, credentials, signal, providerOverrides = null }) {
+    const baseHeaders = this.buildHeaders(credentials, stream !== false);
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
     const psd = credentials?.providerSpecificData || {};
     const query = flattenQuery(body?.messages || []);
     const responseId = `chatcmpl-trae-${Date.now()}`;

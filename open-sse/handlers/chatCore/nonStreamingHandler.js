@@ -7,6 +7,7 @@ import { createErrorResult } from "../../utils/error.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
+import { parseClaudeSSEToMessage } from "./claudeSSEToMessage.js";
 import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -309,6 +310,14 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
         appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
         return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");
       }
+    } else if (targetFormat === FORMATS.CLAUDE) {
+      const sseText = await providerResponse.text();
+      const parsed = parseClaudeSSEToMessage(sseText, model);
+      if (!parsed?.message) {
+        appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+        return createErrorResult(HTTP_STATUS.BAD_GATEWAY, parsed?.error?.message || "Invalid Claude SSE response for non-streaming request");
+      }
+      responseBody = parsed.message;
     } else {
       const sseText = await providerResponse.text();
       const parsed = parseSSEToOpenAIResponse(sseText, model);

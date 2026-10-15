@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { commandCodeToOpenAIResponse } from "../translator/response/commandcode-to-openai.js";
+import { clampCommandCodeMaxTokens } from "../translator/formats/maxTokens.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 
 /**
@@ -22,6 +23,7 @@ export class CommandCodeExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     body.stream = true;
+    if (body?.params && "max_tokens" in body.params) body.params.max_tokens = clampCommandCodeMaxTokens(body.params.max_tokens);
     return body;
   }
 

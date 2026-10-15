@@ -13,6 +13,16 @@ export const ERROR_TYPES = {
   504: { type: "server_error", code: "gateway_timeout" }
 };
 
+// OpenCode policy error code mapping (client-facing)
+export const OPENCODE_POLICY_CODES = {
+  FreeTierError: "free_tier_restricted",
+  free_tier_restricted: "free_tier_restricted",
+  RegionError: "region_restricted",
+  region_restricted: "region_restricted",
+  DataPolicyError: "data_policy_restricted",
+  data_policy_restricted: "data_policy_restricted",
+};
+
 // Default error messages per status code (client-facing)
 export const DEFAULT_ERROR_MESSAGES = {
   400: "Bad request",
@@ -134,6 +144,7 @@ export const ERROR_RULES = [
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
+  { text: "insufficient credit",      backoff: true },
   { text: "capacity",                 backoff: true },
   { text: "overloaded",               backoff: true },
 

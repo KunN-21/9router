@@ -34,6 +34,7 @@
 
 import { matchPattern } from "./pricing.js";
 import { looksLikeVisionModel } from "./visionPatterns.js";
+import { COMMANDCODE_MAX_TOKENS_CEILING } from "../config/commandcode.js";
 
 /**
  * Safe floor — every resolved result is merged over this so consumers
@@ -180,6 +181,7 @@ export const PROVIDER_CAPABILITIES = {
   // Overrides the global entry, whose z.ai shape is correct for z.ai itself.
   "opencode-go": {
     "glm-5.3-flash": { vision: true, videoInput: true, pdf: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
+    "claude-haiku-5-5": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   },
   "codex": {
     "gpt-6-astra":               { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 },
@@ -643,7 +645,7 @@ export function getCapabilitiesForModel(provider, model) {
       thinkingEffortSupported: true,
       vision: !isCommandCodeTextOnly(model),
       contextWindow: 1000000,
-      maxOutput: 384000,
+      maxOutput: COMMANDCODE_MAX_TOKENS_CEILING,
     };
   }
 

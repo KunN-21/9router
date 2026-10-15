@@ -55,8 +55,8 @@ async function normalizeProxyPoolUpdate(proxyPoolIdInput) {
   return { hasProxyPoolField: true, proxyPoolId };
 }
 
-function shouldMergeProviderSpecificData(existing, incoming, hasLegacyProxy, hasProxyPoolField) {
-  return existing !== undefined || incoming !== undefined || hasLegacyProxy || hasProxyPoolField;
+function shouldMergeProviderSpecificData(existing, incoming, hasLegacyProxy, hasProxyPoolField, hasFastModeField) {
+  return existing !== undefined || incoming !== undefined || hasLegacyProxy || hasProxyPoolField || Boolean(hasFastModeField);
 }
 
 // GET /api/providers/[id] - Get single connection
@@ -116,6 +116,23 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: proxyPoolResult.error }, { status: 400 });
     }
 
+    const hasRootFastMode = body.codexFastMode !== undefined;
+    const hasNestedFastMode = providerSpecificData?.codexFastMode !== undefined;
+    if (hasRootFastMode && typeof body.codexFastMode !== "boolean") {
+      return NextResponse.json({ error: "codexFastMode must be a boolean" }, { status: 400 });
+    }
+    if (hasNestedFastMode && typeof providerSpecificData.codexFastMode !== "boolean") {
+      return NextResponse.json({ error: "codexFastMode must be a boolean" }, { status: 400 });
+    }
+    if (hasRootFastMode && hasNestedFastMode && body.codexFastMode !== providerSpecificData.codexFastMode) {
+      return NextResponse.json(
+        { error: "Conflicting codexFastMode values in root and providerSpecificData" },
+        { status: 400 }
+      );
+    }
+    const hasFastModeField = hasRootFastMode || hasNestedFastMode;
+    const resolvedFastMode = hasRootFastMode ? body.codexFastMode : providerSpecificData?.codexFastMode;
+
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (priority !== undefined) updateData.priority = priority;
@@ -132,7 +149,8 @@ export async function PUT(request, { params }) {
         existing.providerSpecificData,
         providerSpecificData,
         proxyConfig.hasAnyProxyField,
-        proxyPoolResult.hasProxyPoolField
+        proxyPoolResult.hasProxyPoolField,
+        hasFastModeField
       )
     ) {
       updateData.providerSpecificData = {
@@ -152,6 +170,14 @@ export async function PUT(request, { params }) {
         } else {
           updateData.providerSpecificData.proxyPoolId = proxyPoolResult.proxyPoolId;
         }
+      }
+
+      if (existing.provider === "codex") {
+        if (hasFastModeField) updateData.providerSpecificData.codexFastMode = resolvedFastMode;
+      } else if (!existing.providerSpecificData || !("codexFastMode" in existing.providerSpecificData)) {
+        delete updateData.providerSpecificData.codexFastMode;
+      } else {
+        updateData.providerSpecificData.codexFastMode = existing.providerSpecificData.codexFastMode;
       }
     }
 

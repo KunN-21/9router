@@ -2,6 +2,7 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { sseChunk } from "../utils/sse.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 
 const GROK_CHAT_API = PROVIDERS["grok-web"].baseUrl;
 const GROK_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -223,7 +224,7 @@ export class GrokWebExecutor extends BaseExecutor {
     super("grok-web", PROVIDERS["grok-web"]);
   }
 
-  async execute({ model, body, stream, credentials, signal, log }) {
+  async execute({ model, body, stream, credentials, signal, log, providerOverrides = null }) {
     const messages = body?.messages;
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       const errResp = new Response(JSON.stringify({
@@ -289,19 +290,21 @@ export class GrokWebExecutor extends BaseExecutor {
       headers["Cookie"] = `sso=${token}`;
     }
 
+    const finalHeaders = applyHeaderOverrides(headers, providerOverrides?.headers);
+
     log?.info?.("GROK-WEB", `Query to ${model} (grok=${grokModel}, mode=${modelMode}), len=${message.length}`);
 
     let response;
     try {
       response = await fetch(GROK_CHAT_API, {
-        method: "POST", headers, body: JSON.stringify(grokPayload), signal,
+        method: "POST", headers: finalHeaders, body: JSON.stringify(grokPayload), signal,
       });
     } catch (err) {
       log?.error?.("GROK-WEB", `Fetch failed: ${err.message || String(err)}`);
       const errResp = new Response(JSON.stringify({
         error: { message: `Grok connection failed: ${err.message || String(err)}`, type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
-      return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
+      return { response: errResp, url: GROK_CHAT_API, headers: finalHeaders, transformedBody: grokPayload };
     }
 
     if (!response.ok) {
@@ -313,14 +316,14 @@ export class GrokWebExecutor extends BaseExecutor {
       const errResp = new Response(JSON.stringify({
         error: { message: errMsg, type: "upstream_error", code: `HTTP_${status}` },
       }), { status, headers: { "Content-Type": "application/json" } });
-      return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
+      return { response: errResp, url: GROK_CHAT_API, headers: finalHeaders, transformedBody: grokPayload };
     }
 
     if (!response.body) {
       const errResp = new Response(JSON.stringify({
         error: { message: "Grok returned empty response body", type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
-      return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
+      return { response: errResp, url: GROK_CHAT_API, headers: finalHeaders, transformedBody: grokPayload };
     }
 
     const cid = `chatcmpl-grok-${crypto.randomUUID().slice(0, 12)}`;
@@ -336,7 +339,7 @@ export class GrokWebExecutor extends BaseExecutor {
     } else {
       finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, isThinking, signal);
     }
-    return { response: finalResponse, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
+    return { response: finalResponse, url: GROK_CHAT_API, headers: finalHeaders, transformedBody: grokPayload };
   }
 }
 

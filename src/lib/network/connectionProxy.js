@@ -48,10 +48,13 @@ function normalizeLegacyProxy(providerSpecificData = {}) {
     providerSpecificData?.connectionNoProxy
   );
 
+  const strictProxy = providerSpecificData?.strictProxy === true;
+
   return {
     connectionProxyEnabled,
     connectionProxyUrl,
     connectionNoProxy,
+    strictProxy,
   };
 }
 
@@ -171,17 +174,39 @@ export async function resolveConnectionProxyConfig(
       error
     );
 
+    const legacy = normalizeLegacyProxy(providerSpecificData);
+    if (legacy.strictProxy !== true) {
+      return {
+        source: "error",
+
+        proxyPoolId: null,
+        proxyPool: null,
+
+        connectionProxyEnabled: false,
+        connectionProxyUrl: "",
+        connectionNoProxy: "",
+
+        strictProxy: false,
+      };
+    }
+
+    const proxyPoolIdRaw = normalizeString(
+      providerSpecificData?.proxyPoolId
+    );
+    const proxyPoolId =
+      proxyPoolIdRaw === "__none__" ? null : (proxyPoolIdRaw || null);
+
     return {
       source: "error",
 
-      proxyPoolId: null,
+      proxyPoolId,
       proxyPool: null,
 
-      connectionProxyEnabled: false,
-      connectionProxyUrl: "",
-      connectionNoProxy: "",
+      connectionProxyEnabled: legacy.connectionProxyEnabled,
+      connectionProxyUrl: legacy.connectionProxyUrl,
+      connectionNoProxy: legacy.connectionNoProxy,
 
-      strictProxy: false,
+      strictProxy: true,
     };
   }
 }

@@ -35,4 +35,28 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     expect(result.shouldFallback).toBe(true);
     expect(result.cooldownMs).toBeGreaterThan(0);
   });
+
+  it.each([
+    "You have insufficient credits to make this request.",
+    "INSUFFICIENT CREDITS",
+    "Insufficient credit balance",
+  ])("retries a credit-scoped 400: %s", message => {
+    expect(checkFallbackError(400, message)).toEqual({
+      shouldFallback: true,
+      cooldownMs: 2000,
+      newBackoffLevel: 1,
+    });
+    expect(checkFallbackError(400, message, 1)).toEqual({
+      shouldFallback: true,
+      cooldownMs: 4000,
+      newBackoffLevel: 2,
+    });
+  });
+
+  it("does not retry an unrelated 400", () => {
+    expect(checkFallbackError(400, "Bad request")).toEqual({
+      shouldFallback: false,
+      cooldownMs: 0,
+    });
+  });
 });

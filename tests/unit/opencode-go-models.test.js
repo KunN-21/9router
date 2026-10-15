@@ -34,6 +34,7 @@ describe("OpenCode Go model catalog", () => {
       "hy4-preview", "hy3", "hy3-preview", "omen-alpha",
       "grok-4.7", "grok-4.6", "grok-4.5", "gpt-5.6-luna", "gpt-6-luna",
       "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
+      "claude-haiku-5-5",
     ]);
   });
 });

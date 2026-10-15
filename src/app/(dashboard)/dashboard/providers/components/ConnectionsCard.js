@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -390,10 +391,28 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   };
 
   const handleUpdateConnection = async (formData) => {
-    try {
-      const res = await fetch(`/api/providers/${selectedConnection.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData) });
-      if (res.ok) { await fetch_(); setShowEditModal(false); }
-    } catch (e) { console.log("update connection error:", e); }
+    if (!selectedConnection?.id) return;
+    const connectionId = selectedConnection.id;
+    const res = await fetch(`/api/providers/${connectionId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formData),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || data.message || "Failed to update connection");
+    }
+    if (
+      selectedConnection.provider === "codex" &&
+      formData.codexFastMode !== undefined &&
+      (!data?.connection ||
+        data.connection.id !== connectionId ||
+        typeof data.connection.providerSpecificData?.codexFastMode !== "boolean")
+    ) {
+      throw new Error("Malformed connection response from server");
+    }
+    await fetch_();
+    setShowEditModal(false);
   };
 
   if (loading) return <Card><div className="h-20 animate-pulse bg-black/5 rounded-lg" /></Card>;

@@ -165,6 +165,48 @@ export async function handleChat(request, clientRawRequest = null) {
 }
 
 /**
+ * Evaluate Codex Fast Mode tri-state precedence.
+ * Guarantees immutability of shared caller body.
+ *
+ * @param {Object} body - Request body
+ * @param {string} provider - Provider name
+ * @param {string} [_model] - Model name (reserved for signature compatibility)
+ * @param {Object} [_settings] - System settings (reserved for plan compatibility)
+ * @param {Object} [credentials] - Provider credentials
+ * @returns {Object} Effective request body (attempt-owned copy if modified, or original body)
+ */
+export function applyCodexFastMode(body, provider, _model, _settings, credentials) {
+  if (provider !== "codex") return body;
+  if (!body || typeof body !== "object") return body;
+
+  // Level 1: Explicit service_tier presence
+  if (Object.prototype.hasOwnProperty.call(body, "service_tier") && body.service_tier !== undefined) {
+    if (body.service_tier === "fast") {
+      return { ...body, service_tier: "priority" };
+    }
+    return body;
+  }
+
+  // Level 2, 3, 4: Speed intent
+  if (body.speed === "fast") {
+    return { ...body, service_tier: "priority" };
+  }
+  if (body.speed === "standard") {
+    return body;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "speed") && body.speed !== undefined) {
+    return body;
+  }
+
+  // Level 5: Intent absent -> check per-account opt-in
+  if (credentials?.providerSpecificData?.codexFastMode === true) {
+    return { ...body, service_tier: "priority" };
+  }
+
+  return body;
+}
+
+/**
  * Handle single model chat request
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, opts = {}) {
@@ -230,6 +272,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
+  // Preferred account hint: x-connection-id header is a preference, not an ACL.
+  // Unknown/inactive/excluded/locked/quota-exhausted pins fall back to existing policy.
+  const rawPreferred = request?.headers?.get("x-connection-id");
+  const preferredConnectionId = typeof rawPreferred === "string" && rawPreferred.trim().length > 0 ? rawPreferred.trim() : null;
+
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
   let lastError = null;
@@ -237,7 +284,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastHeaders = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -277,8 +324,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const providerOverrides = (chatSettings.providerOverrides || {})[provider] || null;
+    const effectiveBody = applyCodexFastMode(body, provider, model, chatSettings, refreshedCredentials);
     const result = await handleChatCore({
-      body: { ...body, model: `${provider}/${model}` },
+      body: { ...effectiveBody, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
@@ -304,6 +353,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       onPxpipeEvent: appendPxpipeEvent,
       onTokenSaverEvent: appendTokenSaverEvent,
       providerThinking,
+      providerOverrides,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {

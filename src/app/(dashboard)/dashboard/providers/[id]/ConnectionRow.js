@@ -6,7 +6,24 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({
+  connection,
+  proxyPools,
+  isOAuth,
+  isFirst,
+  isLast,
+  onMoveUp,
+  onMoveDown,
+  onToggleActive,
+  onUpdateProxy,
+  onEdit,
+  onDelete,
+  oneByOneStatus = null,
+  autoPing = null,
+  isFastMode,
+  updatingFastMode = false,
+  onToggleFastMode = null,
+}) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const proxyDropdownRef = useRef(null);
@@ -26,6 +43,17 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   const autoPingTooltip = autoPing?.provider === "codex"
     ? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota."
     : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
+
+  const isCodex = connection.provider === "codex";
+  const fastModeActive = isFastMode !== undefined
+    ? isFastMode === true
+    : connection.providerSpecificData?.codexFastMode === true;
+  const isBusyFastMode = Boolean(updatingFastMode);
+
+  const handleToggleFastMode = () => {
+    if (isBusyFastMode || connection.isActive === false) return;
+    onToggleFastMode?.(!fastModeActive);
+  };
 
   let maskedProxyUrl = "";
   if (boundProxyPool?.proxyUrl || connection.providerSpecificData?.connectionProxyUrl) {
@@ -109,7 +137,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [modelLockUntil]);
+  }, [modelLockUntil, connection]);
 
   // Determine effective status (override unavailable if cooldown expired)
   const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)
@@ -173,6 +201,11 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
             {hasAnyProxy && (
               <Badge variant={proxyBadgeVariant} size="sm">
                 Proxy
+              </Badge>
+            )}
+            {fastModeActive && (
+              <Badge variant="primary" size="sm">
+                Fast
               </Badge>
             )}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
@@ -257,6 +290,26 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </button>
             </Tooltip>
           )}
+          {isCodex && (
+            <Tooltip text="Toggle Codex Fast Mode (request priority; more quota may be consumed)">
+              <button
+                type="button"
+                onClick={handleToggleFastMode}
+                disabled={isBusyFastMode || connection.isActive === false}
+                aria-label="Toggle Codex Fast Mode (request priority; more quota may be consumed)"
+                aria-pressed={fastModeActive}
+                aria-busy={isBusyFastMode}
+                className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
+                  fastModeActive ? "text-primary" : "text-text-muted hover:text-primary"
+                } ${isBusyFastMode || connection.isActive === false ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                <span className={`material-symbols-outlined text-[18px] ${isBusyFastMode ? "animate-spin" : ""}`}>
+                  {isBusyFastMode ? "progress_activity" : "bolt"}
+                </span>
+                <span className="text-[10px] leading-tight">Fast</span>
+              </button>
+            </Tooltip>
+          )}
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
@@ -315,4 +368,7 @@ ConnectionRow.propTypes = {
     onToggle: PropTypes.func,
     provider: PropTypes.string,
   }),
+  isFastMode: PropTypes.bool,
+  updatingFastMode: PropTypes.bool,
+  onToggleFastMode: PropTypes.func,
 };

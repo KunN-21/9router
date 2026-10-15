@@ -14,7 +14,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { randomUUID } from "crypto";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
-import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
+import { clampCommandCodeMaxTokens } from "../formats/maxTokens.js";
 import { parseDataUri, encodeDataUri } from "../concerns/image.js";
 
 function flattenText(content) {
@@ -184,11 +184,18 @@ function convertTools(tools) {
 
 export function openaiToCommandCodeRequest(model, body, stream /* , credentials */) {
   const { messages, system } = convertMessages(body.messages);
+  let maxTokens;
+  try {
+    maxTokens = clampCommandCodeMaxTokens(body.max_tokens ?? body.max_output_tokens);
+  } catch (e) {
+    if (e?.code === "COMMANDCODE_MAX_TOKENS_INVALID") return null;
+    throw e;
+  }
   const params = {
     model,
     messages,
     stream: stream !== false,
-    max_tokens: body.max_tokens ?? body.max_output_tokens ?? DEFAULT_MAX_TOKENS,
+    max_tokens: maxTokens,
     temperature: body.temperature ?? 0.3,
   };
 

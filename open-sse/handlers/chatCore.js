@@ -62,7 +62,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, onTokenSaverEvent, sourceFormatOverride, providerThinking, skipSsePeek }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, onTokenSaverEvent, sourceFormatOverride, providerThinking, skipSsePeek, providerOverrides = null }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -380,6 +380,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
+    proxyPoolId: credentials?.providerSpecificData?.connectionProxyPoolId || null,
+    strictProxy: credentials?.providerSpecificData?.strictProxy === true,
   };
 
   if (proxyOptions.vercelRelayUrl) {
@@ -425,6 +427,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       skipSsePeek: skipSsePeek === true,
       log,
       proxyOptions,
+      providerOverrides,
     });
     providerResponse = result.response;
     providerUrl = result.url;
@@ -439,7 +442,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (renamedToolNames?.size) {
       toolNameMap = new Map([...(toolNameMap || []), ...renamedToolNames]);
     }
-    reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
+    const customOverrideNames = providerOverrides?.headers ? Object.keys(providerOverrides.headers) : [];
+    reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody, customOverrideNames);
   } catch (error) {
     const now = Date.now();
     trackPendingRequest(model, provider, connectionId, false, true);
@@ -499,6 +503,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
             skipSsePeek: skipSsePeek === true,
             log,
             proxyOptions,
+            providerOverrides,
           });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
@@ -517,7 +522,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
+    const { statusCode, message, resetsAtMs, errorType, errorCode } = await parseUpstreamError(providerResponse, executor);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     const errNow = Date.now();
     saveRequestDetail(buildRequestDetail({
@@ -540,7 +545,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // Client sees the normalised class (4xx stop / 5xx retry, unknown model as
     // 404 rather than the provider's 401); internal classification keeps the
     // real upstream status.
-    return createErrorResult(statusCode, errMsg, resetsAtMs, clientStatusForUpstream(statusCode, message), upstreamResponseHeaders(providerResponse.headers));
+    return createErrorResult(statusCode, errMsg, resetsAtMs, clientStatusForUpstream(statusCode, message), upstreamResponseHeaders(providerResponse.headers), errorType, errorCode);
   }
 
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
@@ -552,6 +557,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // non-stream OpenAI/native client behind a Responses upstream must also take
   // this path — handleForcedSSEToJson returns null when the body is not SSE.
   if (!clientRequestedStreaming && (providerRequiresStreaming || providerResponseFormat === FORMATS.OPENAI_RESPONSES)) {
+    if (providerResponseFormat === FORMATS.CLAUDE) {
+      const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog });
+      streamController.handleComplete();
+      return result;
+    }
     const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNameMap, trackDone, appendLog });
     if (result) { streamController.handleComplete(); return result; }
   }

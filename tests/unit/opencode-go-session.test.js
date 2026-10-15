@@ -138,8 +138,10 @@ describe("OpenCode Go x-opencode-session", () => {
     });
 
     expect(result.headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(result.headers["x-opencode-session-id"]).toBe(result.headers["x-opencode-session"]);
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1].headers["x-opencode-session"]).toBe(result.headers["x-opencode-session"]);
+    expect(fetchMock.mock.calls[0][1].headers["x-opencode-session-id"]).toBe(result.headers["x-opencode-session"]);
     expect(credentials).not.toHaveProperty("_opencodeGoSession");
   });
 

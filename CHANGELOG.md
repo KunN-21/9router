@@ -1,3 +1,21 @@
+# v0.5.99-local.4 (2026-10-15)
+
+- Tổng hợp local.2/local.3 kể từ local.1 đã phát hành: giữ Codex Fast (client-intent, per-account priority, copy-isolation), Custom Headers không giới hạn (UI CustomConfigCard, API overrides atomic, last case-insensitive dispatch, log mask), tích hợp chọn lọc Gates A–E, OpenCode PR #4806 (native IDs, session headers, caches, policy errors) và PR #4860 (fingerprint v2, endpoint free tier `/inference/v1/*`, ưu tiên định tuyến `/inference/v1/responses` cho Muse Spark).
+- Không cam kết thành công live OpenCode/provider; không kiểm thử live provider. Build/pack cô lập hoàn tất 2026-10-15 (10/10 gates, artifact `9router-0.5.99-local.4.tgz` SHA256 `34f341400d611723f302e9a184709cfbe5a5f3723df2a909325e43f1f02a54ef`); câu "build/pack chưa chạy" trước đây chỉ mô tả bước chuẩn bị, hết hiệu lực sau build — hiệu đính tài liệu ngày 2026-10-16, không chạm mã nguồn.
+
+# v0.5.99-local.3 (2026-10-15)
+
+- OpenCode PR #4860: đồng bộ v2 client fingerprint cho OpenCode và OpenCode Zen: User-Agent v2 (`opencode/latest/2.0.26/cli`), client `cli`, mirrored session headers (`x-opencode-session-id`, `x-session-affinity`, `x-session-id`, `x-opencode-project`), bỏ header `x-opencode-request`, chuyển endpoint free tier sang `/inference/v1/*` (bao gồm fix định tuyến ưu tiên /inference/v1/responses trước runtimeTransport cho các model Muse Spark), và áp dụng fingerprint tool `read`/`shell` cùng placeholder instruction notes.
+- Đóng gói phát hành cục bộ 0.5.99-local.3: quy trình build cô lập trong sandbox, kiểm chứng đầy đủ 10 cổng audit tính toàn vẹn artifact, bảo toàn toàn bộ gói phát hành và checksum lịch sử.
+
+# v0.5.99-local.2 (2026-10-15)
+
+- Tích hợp PR chọn lọc (hoàn tất 2026-10-12 qua Gates A–E, tóm tắt không chạy lại): bảo toàn luồng stream trực tiếp, củng cố xử lý token và tính ổn định trên toàn hệ thống.
+- Codex Fast: hỗ trợ nhận diện ý định từ client (client-intent), ưu tiên tài khoản độc lập (per-account priority toggle) và cách ly bản sao ngữ cảnh (copy-isolation); không cam kết tốc độ native Fable /fast hay delivered Codex priority speed.
+- OpenCode PR #4806: hỗ trợ native IDs, session headers, bộ nhớ đệm caches và phân loại lỗi chính sách (policy errors); không tự động cấp consent bản quyền hay cam kết giải quyết hết FreeTierError/RegionError upstream.
+- Unrestricted Custom Headers: giao diện người dùng cấu hình linh hoạt tại Provider detail (`Dashboard > Providers > provider detail > Custom Headers`), API lưu trữ nguyên tử (atomic storage), cơ chế gửi header ưu tiên dòng cuối không phân biệt hoa thường (last case-insensitive dispatch), che giấu thông tin nhạy cảm trong nhật ký (log mask và auth secret redaction) cùng bộ lọc bảo vệ phản hồi lỗi cấu trúc (malformed response guard). Duy trì đầy đủ xác thực cú pháp HTTP (HTTP syntax validation); không áp đặt danh sách đen hay giới hạn số lượng/độ dài ở tầng ứng dụng; Devin CLI từ chối ghi đè header HTTP trước khi spawn tiến trình.
+- Kiểm thử tổng hợp (synthetic verification): 133 test files, 1642 assertions với 1613 pass, 29 baseline fail đã ghi nhận từ trước (known baseline fails, không có regression), 138 new headers assertions pass; bảo toàn 85 frozen files và 163 hashes kiểm chứng; ESLint 28 files đạt 0 errors, 0 warnings. Không kiểm thử trực tiếp trên live provider.
+
 # v0.5.99-local.1 (2026-10-09)
 
 - Tích hợp chọn lọc upstream 0.5.99 và các PR đã review; không merge toàn bộ upstream.

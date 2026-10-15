@@ -443,7 +443,7 @@ export function createSSEStream(options = {}) {
             const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
             parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
             output = `data: ${JSON.stringify(parsed)}\n`;
-            usage = estimated;
+            usage = mergeUsage(usage, estimated);
             injectedUsage = true;
           } else if (isFinishChunk && usage) {
             const buffered = addBufferToUsage(usage);
@@ -626,7 +626,7 @@ export function createSSEStream(options = {}) {
         if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
           const estimated = estimateUsage(body, totalContentLength, sourceFormat);
           item.usage = filterUsageForFormat(estimated, sourceFormat);
-          state.usage = estimated;
+          state.usage = mergeUsage(state.usage, estimated);
         } else if (state.finishReason && isFinishChunk && state.usage) {
           const buffered = addBufferToUsage(state.usage);
           item.usage = filterUsageForFormat(buffered, sourceFormat);

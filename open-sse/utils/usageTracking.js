@@ -226,13 +226,21 @@ export function hasValidUsage(usage) {
   const tokenFields = [
     "prompt_tokens", "completion_tokens", "total_tokens",  // OpenAI
     "input_tokens", "output_tokens",                        // Claude
-    "promptTokenCount", "candidatesTokenCount"              // Gemini
+    "promptTokenCount", "candidatesTokenCount",              // Gemini
+    "cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", // cache-only input
   ];
 
   for (const field of tokenFields) {
     if (typeof usage[field] === "number" && usage[field] > 0) {
       return true;
     }
+  }
+
+  // Cache-only nested shape (buildUsage()/OpenAI forwarding): prompt can be 0
+  // while the cache-read count is the real input.
+  const nestedCached = usage.prompt_tokens_details?.cached_tokens;
+  if (typeof nestedCached === "number" && Number.isFinite(nestedCached) && nestedCached > 0) {
+    return true;
   }
 
   return false;
@@ -322,6 +330,17 @@ export function extractUsage(chunk) {
   return null;
 }
 
+// Cache-only input is still real input: a zero prompt/input paired with a
+// positive cache count counts as evidence of an upstream usage trailer.
+function hasRealInput(usage) {
+  if (!usage || typeof usage !== "object") return false;
+  const positive = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+  return positive(usage.prompt_tokens) || positive(usage.input_tokens) ||
+    positive(usage.cached_tokens) || positive(usage.cache_read_input_tokens) ||
+    positive(usage.cache_creation_input_tokens) ||
+    positive(usage.prompt_tokens_details?.cached_tokens);
+}
+
 // Field-wise max-merge of two usage objects. Anthropic splits usage across
 // events: message_start has real input+cache (output is a placeholder 1),
 // message_delta has the real cumulative output (input/cache absent). Max keeps
@@ -330,14 +349,21 @@ export function extractUsage(chunk) {
 export function mergeUsage(prev, next) {
   if (!prev) return next || null;
   if (!next) return prev;
+  // ponytail: output-only delta is not evidence of a full real usage object,
+  // so real output without positive input/cache falls through to the normal
+  // max-merge and keeps the earlier input plus its estimated flag. Ceiling
+  // accepted; upgrade path is per-field provenance (input vs output source).
+  if (next.estimated && !prev.estimated && hasValidUsage(prev)) return prev;
+  if (prev.estimated && !next.estimated && hasRealInput(next)) return { ...next };
   const merged = { ...prev };
   for (const [k, v] of Object.entries(next)) {
     // typeof NaN === "number" — guard with Number.isFinite so one malformed
     // chunk can't poison the whole accumulation (Math.max(x, NaN) is NaN).
     if (typeof v === "number" && Number.isFinite(v)) {
       merged[k] = Math.max(typeof merged[k] === "number" ? merged[k] : 0, v);
-    } else if (v && typeof v === "object") {
-      merged[k] = v; // nested details objects: take latest
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      const base = merged[k] && typeof merged[k] === "object" && !Array.isArray(merged[k]) ? merged[k] : {};
+      merged[k] = { ...base, ...v };
     }
   }
   return merged;

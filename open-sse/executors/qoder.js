@@ -28,6 +28,7 @@ import { createHash } from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 import { FETCH_CONNECT_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
 import {
@@ -609,7 +610,7 @@ export class QoderExecutor extends BaseExecutor {
   //   - body encoded with QoderEncodeBody before signing
   //   - COSY headers built from the *encoded* body bytes
   //   - response stream re-wrapped from {statusCodeValue, body} to OpenAI SSE
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null }) {
     // PAT (pt-...) → exchange for short-lived job token + resolve userId so
     // downstream COSY signing + catalog fetch work. Device tokens (dt-...) and
     // job tokens (jt-...) skip this and are used directly.
@@ -688,7 +689,7 @@ export class QoderExecutor extends BaseExecutor {
     }
 
     const modelSource = (payload.model_config && payload.model_config.source) || "system";
-    const headers = {
+    const baseHeaders = {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
       "Cache-Control": "no-cache",
@@ -698,6 +699,7 @@ export class QoderExecutor extends BaseExecutor {
       "Accept-Encoding": "identity",
       ...cosyHeaders,
     };
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
 
     // Abort if upstream doesn't return response headers within connect timeout.
     const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;

@@ -187,6 +187,7 @@ export function claudeToResponsesRequest(model, body, stream, credentials) {
     if (src.temperature !== undefined) result.temperature = src.temperature;
     if (src.top_p !== undefined) result.top_p = src.top_p;
     if (src.reasoning !== undefined) result.reasoning = src.reasoning;
+    if (src.service_tier !== undefined) result.service_tier = src.service_tier;
 
     return result;
   } catch {

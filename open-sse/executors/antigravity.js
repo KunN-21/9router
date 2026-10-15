@@ -147,14 +147,42 @@ export class AntigravityExecutor extends BaseExecutor {
       // Strip model name suffixes for the actual API model name
       const cleanModel = model.replace(/-(\d+)x(\d+)$/, "");
 
-      // Build simplified contents — text-only, merge all user messages
+      const srcContents = Array.isArray(body.request?.contents)
+        ? body.request.contents
+        : Array.isArray(body.contents)
+          ? body.contents
+          : null;
+      if (!srcContents) {
+        throw new Error("Antigravity image_gen request requires contents to be an array");
+      }
       const contents = [];
-      const srcContents = body.request?.contents || body.contents || [];
       for (const c of srcContents) {
-        const textParts = (c.parts || []).filter(p => p.text !== undefined).map(p => ({ text: p.text }));
-        if (textParts.length > 0) {
-          contents.push({ role: c.role || "user", parts: textParts });
+        if (!c || typeof c !== "object" || Array.isArray(c)) {
+          throw new Error("Antigravity image_gen request requires each content entry to be an object");
         }
+        if (!Array.isArray(c.parts)) {
+          throw new Error("Antigravity image_gen request requires parts to be an array");
+        }
+        const parts = [];
+        for (const p of c.parts) {
+          if (!p || typeof p !== "object" || Array.isArray(p)) continue;
+          const hasInline = p.inlineData !== undefined || p.inline_data !== undefined;
+          if (hasInline) {
+            const inline = p.inlineData !== undefined ? p.inlineData : p.inline_data;
+            if (!inline || typeof inline !== "object" || Array.isArray(inline)) {
+              throw new TypeError("Antigravity image_gen inlineData must be an object");
+            }
+            if (typeof inline.data !== "string" || inline.data === "") {
+              throw new TypeError("Antigravity image_gen inlineData.data must be a non-empty base64 string");
+            }
+            const { mime_type: snakeMime, mimeType: camelMime, ...rest } = inline;
+            const mimeType = camelMime ?? snakeMime;
+            parts.push({ inlineData: { ...rest, ...(mimeType ? { mimeType } : {}), data: inline.data } });
+          } else if (p.text !== undefined) {
+            parts.push({ text: p.text });
+          }
+        }
+        if (parts.length > 0) contents.push({ role: c.role || "user", parts });
       }
 
       const sessionId = resolveSessionId({

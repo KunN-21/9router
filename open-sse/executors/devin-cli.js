@@ -319,7 +319,13 @@ export class DevinCliExecutor extends BaseExecutor {
     return null;
   }
 
-  async execute({ model, body, credentials, signal, log }) {
+  async execute({ model, body, credentials, signal, log, providerOverrides = null }) {
+    if (providerOverrides?.headers && Object.keys(providerOverrides.headers).length > 0) {
+      const err = new Error("Devin CLI uses stdio subprocess transport (ACP protocol) and does not support HTTP transport headers.");
+      err.name = "TransportError";
+      throw err;
+    }
+
     const b = body ?? {};
     const messages = Array.isArray(b.messages)
       ? b.messages

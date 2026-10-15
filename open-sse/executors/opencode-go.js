@@ -162,11 +162,13 @@ export class OpenCodeGoExecutor extends DefaultExecutor {
     const prepared = credentials?.[SESSION_FIELD];
     if (prepared) {
       headers[SESSION_HEADER] = prepared;
+      headers["x-opencode-session-id"] = prepared;
       return headers;
     }
 
     const fallback = this.prepareRequestCredentials({ credentials });
     headers[SESSION_HEADER] = fallback[SESSION_FIELD];
+    headers["x-opencode-session-id"] = fallback[SESSION_FIELD];
     return headers;
   }
 

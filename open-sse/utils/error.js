@@ -1,35 +1,61 @@
-import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, isPermanentModelError } from "../config/errorConfig.js";
+import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, isPermanentModelError, OPENCODE_POLICY_CODES } from "../config/errorConfig.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 /**
  * Build OpenAI-compatible error response body
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
+ * @param {string} [errorType] - Optional error type override
+ * @param {string} [errorCode] - Optional error code override
  * @returns {object} Error response object
  */
-export function buildErrorBody(statusCode, message) {
-  const errorInfo = ERROR_TYPES[statusCode] || 
-    (statusCode >= 500 
+export function buildErrorBody(statusCode, message, errorType = null, errorCode = null) {
+  const errorInfo = ERROR_TYPES[statusCode] ||
+    (statusCode >= 500
       ? { type: "server_error", code: "internal_server_error" }
       : { type: "invalid_request_error", code: "" });
 
-  return {
-    error: {
-      message: message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
-      type: errorInfo.type,
-      code: errorInfo.code
-    }
+  const rawType = typeof errorType === "string" ? errorType : null;
+  const rawCode = typeof errorCode === "string" ? errorCode : null;
+  const policyKey = rawCode || rawType;
+  const isPolicyKey = Boolean(
+    policyKey &&
+    OPENCODE_POLICY_CODES &&
+    Object.prototype.hasOwnProperty.call(OPENCODE_POLICY_CODES, policyKey)
+  );
+
+  let finalType = errorInfo.type;
+  let finalCode = errorInfo.code;
+
+  if (statusCode === 403 && isPolicyKey) {
+    finalType = "permission_error";
+    finalCode = OPENCODE_POLICY_CODES[policyKey];
+  }
+
+  const errObj = {
+    message: message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
+    type: finalType,
+    code: finalCode
   };
+
+  if (rawType && OPENCODE_POLICY_CODES && Object.prototype.hasOwnProperty.call(OPENCODE_POLICY_CODES, rawType)) {
+    errObj.upstream_type = rawType;
+  }
+
+  return { error: errObj };
 }
 
 /**
  * Create error Response object (for non-streaming)
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
+ * @param {object} [extraHeaders] - Optional headers
+ * @param {string} [errorType] - Optional error type override
+ * @param {string} [errorCode] - Optional error code override
  * @returns {Response} HTTP Response object
  */
-export function errorResponse(statusCode, message, extraHeaders = null) {
-  return new Response(JSON.stringify(buildErrorBody(statusCode, message)), {
+export function errorResponse(statusCode, message, extraHeaders = null, errorType = null, errorCode = null) {
+  return new Response(JSON.stringify(buildErrorBody(statusCode, message, errorType, errorCode)), {
     status: statusCode,
     headers: {
       "Content-Type": "application/json",
@@ -44,9 +70,11 @@ export function errorResponse(statusCode, message, extraHeaders = null) {
  * @param {WritableStreamDefaultWriter} writer - Stream writer
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
+ * @param {string} [errorType] - Optional error type override
+ * @param {string} [errorCode] - Optional error code override
  */
-export async function writeStreamError(writer, statusCode, message) {
-  const errorBody = buildErrorBody(statusCode, message);
+export async function writeStreamError(writer, statusCode, message, errorType = null, errorCode = null) {
+  const errorBody = buildErrorBody(statusCode, message, errorType, errorCode);
   const encoder = new TextEncoder();
   await writer.write(encoder.encode(`data: ${JSON.stringify(errorBody)}\n\n`));
 }
@@ -55,7 +83,7 @@ export async function writeStreamError(writer, statusCode, message) {
  * Parse upstream provider error response
  * @param {Response} response - Fetch response from provider
  * @param {object} [executor] - Optional executor with parseError() override for provider-specific parsing
- * @returns {Promise<{statusCode: number, message: string, resetsAtMs?: number}>}
+ * @returns {Promise<{statusCode: number, message: string, resetsAtMs?: number, errorType?: string, errorCode?: string}>}
  */
 export async function parseUpstreamError(response, executor = null) {
   let bodyText = "";
@@ -66,28 +94,69 @@ export async function parseUpstreamError(response, executor = null) {
   }
 
   // Let executor-specific parser extract provider-specific fields (e.g. codex resetsAtMs)
+  let resetsAtMs;
+  let executorMessage = null;
+  let executorStatus = null;
+  let executorErrorType = null;
+  let executorErrorCode = null;
   if (executor && typeof executor.parseError === "function") {
     try {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
-        const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs };
+        executorStatus = parsed.status;
+        if (parsed.message) executorMessage = parsed.message;
+        if (parsed.resetsAtMs) resetsAtMs = parsed.resetsAtMs;
+        if (parsed.errorType) executorErrorType = parsed.errorType;
+        if (parsed.errorCode) executorErrorCode = parsed.errorCode;
       }
     } catch { /* fall through to default parsing */ }
   }
 
   let message = "";
+  let errorType = executorErrorType || null;
+  let errorCode = executorErrorCode || null;
+
   try {
     const json = JSON.parse(bodyText);
-    message = json.error?.message || json.message || json.error || bodyText;
+    if (json && typeof json === "object") {
+      const rawType = (typeof json.error === "object" ? json.error?.type : null)
+        || (typeof json.type === "string" && json.type !== "error" ? json.type : null);
+      if (typeof rawType === "string") errorType = rawType;
+
+      const rawCode = (typeof json.error === "object" ? json.error?.code : null)
+        || (typeof json.code === "string" ? json.code : null);
+      if (typeof rawCode === "string") errorCode = rawCode;
+
+      message = (typeof json.error === "object" ? json.error?.message : null)
+        || (typeof json.message === "string" ? json.message : null)
+        || (typeof json.error === "string" ? json.error : null)
+        || (errorType || errorCode ? (errorType || errorCode) : null);
+    }
   } catch {
-    message = bodyText;
+    message = (executorMessage && executorMessage !== bodyText) ? executorMessage : bodyText;
+    if (bodyText) {
+      if (bodyText.includes("FreeTierError")) errorType = "FreeTierError";
+      else if (bodyText.includes("RegionError")) errorType = "RegionError";
+      else if (bodyText.includes("DataPolicyError")) errorType = "DataPolicyError";
+    }
   }
 
-  const messageStr = typeof message === "string" ? message : JSON.stringify(message);
+  if (executorMessage && executorMessage !== bodyText) {
+    message = executorMessage;
+  }
+
+  if (!message && bodyText && (errorType || errorCode)) {
+    message = errorType || errorCode;
+  }
+
+  const messageStr = typeof message === "string" ? message : (message ? JSON.stringify(message) : "");
   const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
 
-  return { statusCode: response.status, message: finalMessage };
+  const result = { statusCode: executorStatus || response.status, message: finalMessage };
+  if (resetsAtMs !== undefined) result.resetsAtMs = resetsAtMs;
+  if (errorType) result.errorType = errorType;
+  if (errorCode) result.errorCode = errorCode;
+  return result;
 }
 
 /**
@@ -95,9 +164,13 @@ export async function parseUpstreamError(response, executor = null) {
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
  * @param {number} [resetsAtMs] - Optional precise cooldown expiry (ms epoch) for provider-specific quota errors
- * @returns {{ success: false, status: number, error: string, response: Response, resetsAtMs?: number }}
+ * @param {number|object} [clientStatusOrHeaders] - Client status override or headers
+ * @param {object} [extraHeaders] - Optional extra headers
+ * @param {string} [errorType] - Optional error type override
+ * @param {string} [errorCode] - Optional error code override
+ * @returns {{ success: false, status: number, error: string, response: Response, resetsAtMs?: number, errorType?: string, errorCode?: string }}
  */
-export function createErrorResult(statusCode, message, resetsAtMs, clientStatusOrHeaders = null, extraHeaders = null) {
+export function createErrorResult(statusCode, message, resetsAtMs, clientStatusOrHeaders = null, extraHeaders = null, errorType = null, errorCode = null) {
   let clientStatus = null;
   let headers = extraHeaders;
   if (clientStatusOrHeaders && typeof clientStatusOrHeaders === "object") {
@@ -105,7 +178,7 @@ export function createErrorResult(statusCode, message, resetsAtMs, clientStatusO
   } else {
     clientStatus = clientStatusOrHeaders;
   }
-  return {
+  const result = {
     success: false,
     // The true upstream status, kept for internal classification (fallback
     // rules, cooldowns) so those keep seeing what the provider actually said.
@@ -114,8 +187,11 @@ export function createErrorResult(statusCode, message, resetsAtMs, clientStatusO
     resetsAtMs,
     // What the CLIENT sees, which may be normalised — e.g. an unknown model
     // reported as 401 becomes 404, so callers do not read it as an auth failure.
-    response: errorResponse(clientStatus ?? statusCode, message, headers)
+    response: errorResponse(clientStatus ?? statusCode, message, headers, errorType, errorCode)
   };
+  if (errorType) result.errorType = errorType;
+  if (errorCode) result.errorCode = errorCode;
+  return result;
 }
 
 /**

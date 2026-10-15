@@ -1,6 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { PROVIDERS } from "../config/providers.js";
+import { applyHeaderOverrides } from "../utils/headerOverrides.js";
 import { randomUUID } from "node:crypto";
 
 // WindsurfExecutor — Codeium gRPC-web chat.
@@ -396,7 +397,7 @@ export class WindsurfExecutor extends BaseExecutor {
     return null;
   }
 
-  async execute({ model, body, stream, credentials, signal, log, upstreamExtraHeaders, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, upstreamExtraHeaders, proxyOptions = null, providerOverrides = null }) {
     const apiKey = credentials?.accessToken || credentials?.apiKey || "";
     const wsModel = resolveWsModelId(model);
 
@@ -411,8 +412,9 @@ export class WindsurfExecutor extends BaseExecutor {
     const framedPayload = grpcWebFrame(protoPayload);
 
     const url = this.buildUrl();
-    const headers = this.buildHeaders(credentials);
-    if (upstreamExtraHeaders) Object.assign(headers, upstreamExtraHeaders);
+    const baseHeaders = this.buildHeaders(credentials);
+    if (upstreamExtraHeaders) Object.assign(baseHeaders, upstreamExtraHeaders);
+    const headers = applyHeaderOverrides(baseHeaders, providerOverrides?.headers);
 
     log?.debug?.("WS", `Windsurf → ${wsModel} (${wsMessages.length} messages)`);
 

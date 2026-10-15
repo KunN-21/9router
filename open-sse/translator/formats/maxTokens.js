@@ -1,4 +1,5 @@
 import { DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS } from "../../config/runtimeConfig.js";
+import { COMMANDCODE_MAX_TOKENS_CEILING } from "../../config/commandcode.js";
 
 function isPositiveInteger(val) {
   return typeof val === "number" && Number.isInteger(val) && val > 0;
@@ -44,6 +45,25 @@ export function adjustMaxTokens(body, ceiling = DEFAULT_MAX_TOKENS, honorExplici
   if (maxTokens > ceiling) maxTokens = ceiling;
 
   return maxTokens;
+}
+
+/**
+ * Clamp a CommandCode max_tokens value to the wire-schema ceiling.
+ * Omitted (undefined/null) falls back to DEFAULT_MAX_TOKENS. An explicit
+ * value that is not a finite positive safe integer throws TypeError with
+ * code COMMANDCODE_MAX_TOKENS_INVALID so translators can map it to a 400
+ * before any network call. No numeric-string coercion.
+ * @param {*} val - Candidate max_tokens value
+ * @returns {number} Clamped max_tokens
+ */
+export function clampCommandCodeMaxTokens(val) {
+  if (val === undefined || val === null) return DEFAULT_MAX_TOKENS;
+  if (typeof val !== "number" || !Number.isSafeInteger(val) || val <= 0) {
+    const err = new TypeError(`commandcode max_tokens must be positive safe integer, got ${typeof val}`);
+    err.code = "COMMANDCODE_MAX_TOKENS_INVALID";
+    throw err;
+  }
+  return Math.min(val, COMMANDCODE_MAX_TOKENS_CEILING);
 }
 
 /**

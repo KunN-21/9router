@@ -167,6 +167,7 @@ export default function ProviderLimits() {
   const [connectionsLoading, setConnectionsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState(null);
   const [togglingId, setTogglingId] = useState(null);
+  const [updatingFastModeIds, setUpdatingFastModeIds] = useState({});
   const [resettingLimitId, setResettingLimitId] = useState(null);
   const [resetConfirmState, setResetConfirmState] = useState(null);
   const [resetCreditsState, setResetCreditsState] = useState(null);
@@ -240,7 +241,7 @@ export default function ProviderLimits() {
         return [];
       }
     },
-    [accountFilter, expiringFirst, page, pageSize, providerFilter],
+    [accountFilter, page, pageSize, providerFilter],
   );
 
   // Fetch quota for a specific connection
@@ -461,27 +462,81 @@ export default function ProviderLimits() {
     [fetchConnections, page],
   );
 
+  const handleToggleCodexFastMode = useCallback(
+    async (connectionId, enabled) => {
+      if (updatingFastModeIds[connectionId]) return;
+      const targetConn = connections.find((c) => c.id === connectionId);
+      if (!targetConn || targetConn.isActive === false) return;
+
+      setUpdatingFastModeIds((prev) => ({ ...(prev || {}), [connectionId]: true }));
+      setErrors((prev) => ({ ...prev, [connectionId]: null }));
+      try {
+        const res = await fetch(`/api/providers/${encodeURIComponent(connectionId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codexFastMode: enabled }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || data.message || "Failed to update Fast Mode");
+        }
+        if (
+          data?.connection &&
+          data.connection.id === connectionId &&
+          typeof data.connection.providerSpecificData?.codexFastMode === "boolean"
+        ) {
+          setConnections((prev) =>
+            prev.map((c) => (c.id === connectionId ? { ...c, ...data.connection } : c))
+          );
+        } else {
+          throw new Error("Malformed connection response from server");
+        }
+      } catch (error) {
+        console.error("Error updating Codex Fast Mode:", error);
+        setErrors((prev) => ({
+          ...prev,
+          [connectionId]: error.message || "Failed to update Fast Mode",
+        }));
+      } finally {
+        setUpdatingFastModeIds((prev) => {
+          if (!prev) return {};
+          const next = { ...prev };
+          delete next[connectionId];
+          return next;
+        });
+      }
+    },
+    [updatingFastModeIds, connections],
+  );
+
   const handleUpdateConnection = useCallback(
     async (formData) => {
       if (!selectedConnection?.id) return;
       const connectionId = selectedConnection.id;
       const provider = selectedConnection.provider;
-      try {
-        const res = await fetch(`/api/providers/${connectionId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(formData),
-        });
-        if (res.ok) {
-          await fetchConnections();
-          setShowEditModal(false);
-          setSelectedConnection(null);
-          if (USAGE_SUPPORTED_PROVIDERS.includes(provider)) {
-            await fetchQuota(connectionId, provider);
-          }
-        }
-      } catch (error) {
-        console.error("Error saving connection:", error);
+      const res = await fetch(`/api/providers/${connectionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || "Failed to update connection");
+      }
+      if (
+        provider === "codex" &&
+        formData.codexFastMode !== undefined &&
+        (!data?.connection ||
+          data.connection.id !== connectionId ||
+          typeof data.connection.providerSpecificData?.codexFastMode !== "boolean")
+      ) {
+        throw new Error("Malformed connection response from server");
+      }
+      await fetchConnections();
+      setShowEditModal(false);
+      setSelectedConnection(null);
+      if (USAGE_SUPPORTED_PROVIDERS.includes(provider)) {
+        await fetchQuota(connectionId, provider);
       }
     },
     [selectedConnection, fetchConnections, fetchQuota],
@@ -1094,7 +1149,7 @@ export default function ProviderLimits() {
           const resetLabel = isCodex ? "Codex reset credit" : "Claude limit reset";
           const resetCreditCount = getCodexResetCreditCount(quota);
           const isResettingLimit = resettingLimitId === conn.id;
-          const rowBusy = deletingId === conn.id || togglingId === conn.id || isResettingLimit;
+          const rowBusy = deletingId === conn.id || togglingId === conn.id || isResettingLimit || Boolean(updatingFastModeIds[conn.id]);
           const rawQuotas = quota?.quotas || [];
           const visibleQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
           const hiddenQuotaRows = getHiddenQuotaRows(conn.provider, rawQuotas, quotaVisibility);
@@ -1138,10 +1193,12 @@ export default function ProviderLimits() {
                         const rawPlan = quota?.raw?.subscriptionPlan ?? quota?.subscriptionPlan ?? null;
                         const showExpiry = shouldShowSubscriptionExpiry({ subscriptionPlan: rawPlan, subscriptionActiveUntil: rawAct });
                         const fmt = showExpiry ? formatSubscriptionActiveUntil(rawAct) : null;
-                        if (!rawPlan && !fmt) return null;
+                        const isFast = conn.providerSpecificData?.codexFastMode === true;
+                        if (!rawPlan && !fmt && !isFast) return null;
                         return (
                           <div className="mt-1 flex flex-wrap items-center gap-2">
                             {rawPlan ? <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">{String(rawPlan)}</span> : null}
+                            {isFast ? <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">Fast</span> : null}
                             {fmt ? <time dateTime={fmt.dateTime} className="text-[11px] text-text-muted">Subscription active until {fmt.display}</time> : null}
                           </div>
                         );
@@ -1244,6 +1301,25 @@ export default function ProviderLimits() {
                           className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingMaps[conn.provider]?.[conn.id] === true ? "text-primary" : "text-text-muted"}`}
                         >
                           <span className="material-symbols-outlined text-[18px]">bolt</span>
+                        </button>
+                      </Tooltip>
+                    )}
+                    {isCodex && (
+                      <Tooltip text="Toggle Codex Fast Mode (request priority; more quota may be consumed)">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCodexFastMode(conn.id, !(conn.providerSpecificData?.codexFastMode === true))}
+                          disabled={Boolean(updatingFastModeIds[conn.id]) || conn.isActive === false}
+                          aria-label="Toggle Codex Fast Mode (request priority; more quota may be consumed)"
+                          aria-pressed={conn.providerSpecificData?.codexFastMode === true}
+                          aria-busy={Boolean(updatingFastModeIds[conn.id])}
+                          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
+                            conn.providerSpecificData?.codexFastMode === true ? "text-primary" : "text-text-muted"
+                          } ${Boolean(updatingFastModeIds[conn.id]) || conn.isActive === false ? "opacity-50 cursor-not-allowed" : ""}`}
+                        >
+                          <span className={`material-symbols-outlined text-[18px] ${Boolean(updatingFastModeIds[conn.id]) ? "animate-spin" : ""}`}>
+                            {Boolean(updatingFastModeIds[conn.id]) ? "progress_activity" : "bolt"}
+                          </span>
                         </button>
                       </Tooltip>
                     )}

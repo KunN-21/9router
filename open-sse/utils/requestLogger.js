@@ -69,25 +69,55 @@ function writeJsonFile(sessionPath, filename, data) {
   }
 }
 
-// Mask sensitive data in headers (DISABLED - keep full token for testing)
-function maskSensitiveHeaders(headers) {
-  if (!headers) return {};
-  return { ...headers };
-  
-  // Old masking code (disabled):
-  // const masked = { ...headers };
-  // const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token"];
-  // 
-  // for (const key of Object.keys(masked)) {
-  //   const lowerKey = key.toLowerCase();
-  //   if (sensitiveKeys.some(sk => lowerKey.includes(sk))) {
-  //     const value = masked[key];
-  //     if (value && value.length > 20) {
-  //       masked[key] = value.slice(0, 10) + "..." + value.slice(-5);
-  //     }
-  //   }
-  // }
-  // return masked;
+const SENSITIVE_HEADER_KEYS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "api-key",
+  "token",
+  "secret",
+  "password",
+  "key",
+  "session",
+  "x-opencode-session",
+  "session_id",
+  "x-session-affinity"
+]);
+
+// Mask sensitive data in headers
+export function maskSensitiveHeaders(headers, customSecretNames = []) {
+  if (!headers || typeof headers !== "object") return {};
+  const masked = {};
+  const customSet = new Set(
+    (Array.isArray(customSecretNames) ? customSecretNames : []).map((k) => String(k).toLowerCase())
+  );
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value !== "string") {
+      masked[key] = value;
+      continue;
+    }
+
+    const lowerKey = key.toLowerCase();
+    const isSensitive =
+      SENSITIVE_HEADER_KEYS.has(lowerKey) ||
+      customSet.has(lowerKey) ||
+      lowerKey.includes("auth") ||
+      lowerKey.includes("cookie") ||
+      lowerKey.includes("token") ||
+      lowerKey.includes("secret") ||
+      lowerKey.includes("key");
+
+    if (isSensitive) {
+      masked[key] = "[REDACTED]";
+    } else {
+      masked[key] = value;
+    }
+  }
+
+  return masked;
 }
 
 // No-op logger when logging is disabled
@@ -154,23 +184,24 @@ export async function createRequestLogger(sourceFormat, targetFormat, model) {
     },
     
     // 4. Log target format request (openai → target)
-    logTargetRequest(url, headers, body) {
+    logTargetRequest(url, headers, body, customSecretNames = []) {
       writeJsonFile(sessionPath, "4_req_target.json", {
         timestamp: new Date().toISOString(),
         url,
-        headers: maskSensitiveHeaders(headers),
+        headers: maskSensitiveHeaders(headers, customSecretNames),
         body
       });
     },
-    
+
     // 5. Log provider response (for non-streaming or error)
     logProviderResponse(status, statusText, headers, body) {
       const filename = "5_res_provider.json";
+      const rawHeaders = headers ? (typeof headers.entries === "function" ? Object.fromEntries(headers.entries()) : headers) : {};
       writeJsonFile(sessionPath, filename, {
         timestamp: new Date().toISOString(),
         status,
         statusText,
-        headers: headers ? (typeof headers.entries === "function" ? Object.fromEntries(headers.entries()) : headers) : {},
+        headers: maskSensitiveHeaders(rawHeaders),
         body
       });
     },
