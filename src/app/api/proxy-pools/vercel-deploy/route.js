@@ -25,6 +25,17 @@ export default async function handler(req) {
   delete rawHeaders["x-relay-target"];
   delete rawHeaders["x-relay-path"];
   delete rawHeaders["host"];
+  // Forwarding/proxy identity headers describe the CLIENT, not this relay.
+  // Passing them through makes the target meter our caller's address instead of
+  // the relay's, so every egress in a pool collapses onto one bucket — the pool
+  // then buys nothing. The relay must look like an ordinary origin request.
+  for (const h of [
+    "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+    "x-forwarded-port", "x-real-ip", "cf-connecting-ip", "cf-connecting-ipv6",
+    "cf-ipcountry", "cf-ray", "cf-visitor", "cf-ew-via", "cdn-loop",
+    "true-client-ip", "fastly-client-ip", "x-client-ip", "x-cluster-client-ip",
+    "x-9r-real-ip", "x-9r-peer-token",
+  ]) delete rawHeaders[h];
 
   const response = await fetch(targetUrl, {
     method: req.method,

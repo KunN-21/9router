@@ -117,6 +117,22 @@ export async function parseUpstreamError(response, executor = null) {
   let errorCode = executorErrorCode || null;
   let errorCap = null;
 
+  // The live free tier sends its quota window as a `retry-after` HEADER on a
+  // body that carries nothing else (`{"type":"error","error":{"type":
+  // "FreeUsageLimitError",...}}`). Reading only the body would leave the
+  // cooldown at the router's 2s..5min guess against a window that can run to
+  // the next UTC midnight, so the header is the authoritative source.
+  const retryAfterHeader = response.headers?.get?.("retry-after");
+  if (retryAfterHeader && resetsAtMs === undefined) {
+    const secs = Number(retryAfterHeader);
+    if (Number.isFinite(secs) && secs > 0) {
+      resetsAtMs = Date.now() + secs * 1000;
+    } else {
+      const when = Date.parse(retryAfterHeader);
+      if (Number.isFinite(when) && when > Date.now()) resetsAtMs = when;
+    }
+  }
+
   try {
     const json = JSON.parse(bodyText);
     if (json && typeof json === "object") {
