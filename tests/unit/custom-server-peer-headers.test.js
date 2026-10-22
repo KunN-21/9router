@@ -68,6 +68,13 @@ describe("custom-server peer header sanitizing", () => {
     expect(headers["x-forwarded-for"]).toBeUndefined();
   });
 
+  it("removes x-real-ip after resolving a trusted loopback proxy hop", async () => {
+    const headers = await get({ "x-real-ip": "203.0.113.9" });
+
+    expect(headers["x-9r-real-ip"]).toBe("203.0.113.9");
+    expect(headers["x-real-ip"]).toBeUndefined();
+  });
+
   // chat.js snapshots every client header into the request detail. Anything that grants
   // access must not survive into a record the dashboard renders and cloud sync uploads.
   it("keeps the peer token out of persisted request details", () => {

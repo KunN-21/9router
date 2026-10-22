@@ -2,7 +2,8 @@ import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
-import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
+import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStreamToolCallIds } from "./streamHelpers.js";
+import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -117,6 +118,7 @@ export function createSSEStream(options = {}) {
 
   let buffer = "";
   let usage = null;
+  const seenToolCallIds = new Map();
   let completionFlushTimer = null;
 
   // Per-stream decoder with stream:true to correctly handle multi-byte chars split across chunks
@@ -367,7 +369,7 @@ export function createSSEStream(options = {}) {
 
       if (trimmed.startsWith("data:")) {
         try {
-          const parsed = JSON.parse(trimmed.slice(5).trim());
+          let parsed = JSON.parse(trimmed.slice(5).trim());
 
           const termStatus = detectUpstreamTerminal(parsed, targetFormat, currentOpenAIResponsesEvent);
           if (termStatus === "error") {
@@ -379,6 +381,10 @@ export function createSSEStream(options = {}) {
           }
 
           const idFixed = fixInvalidId(parsed);
+          const toolCallIdFixed = ensureStreamToolCallIds(parsed, seenToolCallIds);
+          const restored = restoreToolNames(parsed, toolNameMap);
+          const toolNameRestored = restored !== parsed;
+          parsed = restored;
 
           let fieldsInjected = false;
           if (parsed.choices !== undefined) {
@@ -450,7 +456,7 @@ export function createSSEStream(options = {}) {
             parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
             output = `data: ${JSON.stringify(parsed)}\n`;
             injectedUsage = true;
-          } else if (idFixed || fieldsInjected) {
+          } else if (idFixed || fieldsInjected || toolCallIdFixed || toolNameRestored) {
             output = `data: ${JSON.stringify(parsed)}\n`;
             injectedUsage = true;
           }
@@ -831,7 +837,7 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, toolNameMap = null) {
   const passthroughArgs = provider !== null && typeof provider === "object"
     ? { ...provider, mode: STREAM_MODE.PASSTHROUGH }
     : {
@@ -843,6 +849,7 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
         body,
         onStreamComplete,
         apiKey,
+        toolNameMap,
       };
   return createSSEStream(passthroughArgs);
 }

@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import Card from "./Card";
 import Select from "./Select";
 import Badge from "./Badge";
+import Toggle from "./Toggle";
 
 const NONE_PROXY_POOL_VALUE = "__none__";
 const STRATEGIES = [
@@ -20,10 +21,15 @@ export default function NoAuthProxyCard({ providerId }) {
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  // OpenCode Free 429 recovery knobs — see open-sse/executors/opencode.js.
+  const [rotateSessionOn429, setRotateSessionOn429] = useState(false);
+  const [rotateIdentityOn429, setRotateIdentityOn429] = useState(false);
 
   const confirmedConfigRef = useRef({
     proxyPoolId: NONE_PROXY_POOL_VALUE,
     rotateStrategy: "none",
+    rotateSessionOn429: false,
+    rotateIdentityOn429: false,
   });
   const savingRef = useRef(false);
 
@@ -45,11 +51,17 @@ export default function NoAuthProxyCard({ providerId }) {
             (settingsData.providerStrategies || {})[providerId] || {};
           const confirmedPool = override.proxyPoolId || NONE_PROXY_POOL_VALUE;
           const confirmedStrategy = override.rotateStrategy || "none";
+          const confirmedRotateSession = override.rotateSessionOn429 === true;
+          const confirmedRotateIdentity = override.rotateIdentityOn429 === true;
           setProxyPoolId(confirmedPool);
           setRotateStrategy(confirmedStrategy);
+          setRotateSessionOn429(confirmedRotateSession);
+          setRotateIdentityOn429(confirmedRotateIdentity);
           confirmedConfigRef.current = {
             proxyPoolId: confirmedPool,
             rotateStrategy: confirmedStrategy,
+            rotateSessionOn429: confirmedRotateSession,
+            rotateIdentityOn429: confirmedRotateIdentity,
           };
         }
       })
@@ -61,7 +73,7 @@ export default function NoAuthProxyCard({ providerId }) {
   }, [providerId]);
 
   const save = useCallback(
-    async (poolId, strategy) => {
+    async (poolId, strategy, rotateSession, rotateIdentity) => {
       if (savingRef.current) return;
       savingRef.current = true;
       setSaving(true);
@@ -95,6 +107,14 @@ export default function NoAuthProxyCard({ providerId }) {
           existingProviderConfig.rotateStrategy = strategy;
         }
 
+        if (rotateSession) existingProviderConfig.rotateSessionOn429 = true;
+        else delete existingProviderConfig.rotateSessionOn429;
+
+        // Identity rotation is only meaningful on top of session rotation, and
+        // the executor ignores it otherwise — keep the stored shape honest.
+        if (rotateSession && rotateIdentity) existingProviderConfig.rotateIdentityOn429 = true;
+        else delete existingProviderConfig.rotateIdentityOn429;
+
         const updated = { ...current };
         if (Object.keys(existingProviderConfig).length === 0) {
           delete updated[providerId];
@@ -116,6 +136,8 @@ export default function NoAuthProxyCard({ providerId }) {
         confirmedConfigRef.current = {
           proxyPoolId: poolId,
           rotateStrategy: strategy,
+          rotateSessionOn429: rotateSession,
+          rotateIdentityOn429: rotateSession && rotateIdentity,
         };
         setSavedFlash(true);
         setTimeout(() => setSavedFlash(false), 1500);
@@ -125,6 +147,8 @@ export default function NoAuthProxyCard({ providerId }) {
         // Rollback local selection state to last confirmed values
         setProxyPoolId(confirmedConfigRef.current.proxyPoolId);
         setRotateStrategy(confirmedConfigRef.current.rotateStrategy);
+        setRotateSessionOn429(confirmedConfigRef.current.rotateSessionOn429);
+        setRotateIdentityOn429(confirmedConfigRef.current.rotateIdentityOn429);
       } finally {
         savingRef.current = false;
         setSaving(false);
@@ -136,13 +160,26 @@ export default function NoAuthProxyCard({ providerId }) {
   const handlePoolChange = (newPoolId) => {
     if (savingRef.current) return;
     setProxyPoolId(newPoolId);
-    save(newPoolId, rotateStrategy);
+    save(newPoolId, rotateStrategy, rotateSessionOn429, rotateIdentityOn429);
   };
 
   const handleStrategyChange = (newStrategy) => {
     if (savingRef.current) return;
     setRotateStrategy(newStrategy);
-    save(proxyPoolId, newStrategy);
+    save(proxyPoolId, newStrategy, rotateSessionOn429, rotateIdentityOn429);
+  };
+
+  const handleRotateSessionChange = (enabled) => {
+    if (savingRef.current) return;
+    setRotateSessionOn429(enabled);
+    if (!enabled) setRotateIdentityOn429(false);
+    save(proxyPoolId, rotateStrategy, enabled, enabled ? rotateIdentityOn429 : false);
+  };
+
+  const handleRotateIdentityChange = (enabled) => {
+    if (savingRef.current) return;
+    setRotateIdentityOn429(enabled);
+    save(proxyPoolId, rotateStrategy, rotateSessionOn429, enabled);
   };
 
   const isOpenCode = providerId === "opencode";
@@ -280,6 +317,34 @@ export default function NoAuthProxyCard({ providerId }) {
               : `Uses the selected pool above. Set to Round-robin or Random to rotate across all active pools.`}
         </p>
       </div>
+
+      {isOpenCode && (
+        <div className="mt-4 pt-4 border-t border-border-subtle flex flex-col gap-4">
+          <div>
+            <p className="text-sm font-medium text-text-main">429 recovery</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              When the upstream free tier answers 429 FreeUsageLimitError, retry with a freshly
+              minted upstream identity. Off by default; each retry is a real upstream request.
+            </p>
+          </div>
+
+          <Toggle
+            checked={rotateSessionOn429}
+            onChange={handleRotateSessionChange}
+            disabled={saving}
+            label="Rotate session on 429"
+            description="Mint a new x-opencode-session and retry, up to 3 times. Skipped when the 429 reports scope=shared."
+          />
+
+          <Toggle
+            checked={rotateIdentityOn429}
+            onChange={handleRotateIdentityChange}
+            disabled={saving || !rotateSessionOn429}
+            label="Also rotate project id"
+            description="Send a fresh x-opencode-project (sha1 shape, like a real git-derived project id) alongside the rotated session. Only applies when session rotation is on."
+          />
+        </div>
+      )}
     </Card>
   );
 }

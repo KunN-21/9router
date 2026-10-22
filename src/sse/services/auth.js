@@ -18,6 +18,15 @@ function githubMonthlyResetMs(status, errorText, provider) {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
+// Resolve only active configured egresses not yet attempted by this request.
+async function resolveProxyPoolCandidates(excludeSet) {
+  const pools = (await getProxyPools({ isActive: true })).filter(p => p.proxyUrl);
+  return {
+    configured: pools.length,
+    candidates: pools.map(p => p.id).filter(id => !excludeSet.has("proxy:" + id) && !excludeSet.has(id)),
+  };
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
@@ -49,14 +58,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
       if (strategy !== "none") {
-        const allPools = await getProxyPools({ isActive: true });
-        const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
-        pickedId = pickProxyPoolId(poolIds, strategy, providerId);
+        const { configured, candidates } = await resolveProxyPoolCandidates(excludeSet);
+        if (configured > 0 && candidates.length === 0) return null;
+        pickedId = pickProxyPoolId(candidates, strategy, providerId);
+      } else if (pickedId && (excludeSet.has("proxy:" + pickedId) || excludeSet.has(pickedId))) {
+        const { candidates } = await resolveProxyPoolCandidates(excludeSet);
+        if (candidates.length === 0) return null;
+        pickedId = candidates[0];
       }
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
+      const connectionId = resolvedProxy.proxyPool ? "proxy:" + resolvedProxy.proxyPoolId : "noauth";
       return {
-        id: "noauth",
-        connectionName: "Public",
+        id: connectionId,
+        connectionId,
+        connectionName: resolvedProxy.proxyPool?.name || (resolvedProxy.proxyPool ? "Proxy (" + resolvedProxy.proxyPoolId + ")" : "Public"),
         isActive: true,
         accessToken: "public",
         providerSpecificData: {
@@ -258,6 +273,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  if (connectionId.startsWith("proxy:")) {
+    // Egress failover is for server faults, never quota, permission, or policy denial.
+    const message = typeof errorText === "string" ? errorText : JSON.stringify(errorText || "");
+    if (status < 500 || status > 599 || /quota|rate.?limit|free.?tier|region|data.?policy/i.test(message)) {
+      return { shouldFallback: false, cooldownMs: 0 };
+    }
+    const { shouldFallback, cooldownMs } = checkFallbackError(status, errorText, 0);
+    return { shouldFallback, cooldownMs };
+  }
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
@@ -320,7 +344,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  * @param {string|null} model - model that succeeded
  */
 export async function clearAccountError(connectionId, currentConnection, model = null) {
-  if (!connectionId || connectionId === "noauth") return;
+  if (!connectionId || connectionId === "noauth" || connectionId.startsWith("proxy:")) return;
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));

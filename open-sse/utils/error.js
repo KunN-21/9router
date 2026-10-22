@@ -115,6 +115,7 @@ export async function parseUpstreamError(response, executor = null) {
   let message = "";
   let errorType = executorErrorType || null;
   let errorCode = executorErrorCode || null;
+  let errorCap = null;
 
   try {
     const json = JSON.parse(bodyText);
@@ -131,6 +132,22 @@ export async function parseUpstreamError(response, executor = null) {
         || (typeof json.message === "string" ? json.message : null)
         || (typeof json.error === "string" ? json.error : null)
         || (errorType || errorCode ? (errorType || errorCode) : null);
+
+      // 429 quota envelope carries the real reset window and the meter that
+      // tripped (OpenCode Free: RateLimit.FreeUsageLimitError). Without this the
+      // router backs off 2s..5min while upstream may stay blocked until UTC
+      // midnight, so every retry in the window is wasted.
+      if (typeof json.retryAfter === "number" && Number.isFinite(json.retryAfter) && json.retryAfter > 0) {
+        if (resetsAtMs === undefined) resetsAtMs = Date.now() + json.retryAfter * 1000;
+      }
+      if (json.cap && typeof json.cap === "object") {
+        errorCap = {
+          reason: typeof json.cap.reason === "string" ? json.cap.reason : null,
+          scope: typeof json.cap.scope === "string" ? json.cap.scope : null,
+          limit: Number.isFinite(json.cap.limit) ? json.cap.limit : null,
+          usage: Number.isFinite(json.cap.usage) ? json.cap.usage : null,
+        };
+      }
     }
   } catch {
     message = (executorMessage && executorMessage !== bodyText) ? executorMessage : bodyText;
@@ -156,6 +173,7 @@ export async function parseUpstreamError(response, executor = null) {
   if (resetsAtMs !== undefined) result.resetsAtMs = resetsAtMs;
   if (errorType) result.errorType = errorType;
   if (errorCode) result.errorCode = errorCode;
+  if (errorCap) result.cap = errorCap;
   return result;
 }
 

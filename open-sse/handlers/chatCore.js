@@ -522,7 +522,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs, errorType, errorCode } = await parseUpstreamError(providerResponse, executor);
+    const { statusCode, message, resetsAtMs, errorType, errorCode, cap } = await parseUpstreamError(providerResponse, executor);
+    // Quota envelopes name the meter that tripped (requests/spend/... and
+    // shared vs model scope). Surfacing it turns an opaque "rate limit" into the
+    // one fact an operator needs: whether switching identity or model can help.
+    if (cap) log?.warn?.("QUOTA", `${provider} | ${model} | ${cap.reason || "?"} scope=${cap.scope || "?"} usage=${cap.usage ?? "?"}/${cap.limit ?? "?"}`);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     const errNow = Date.now();
     saveRequestDetail(buildRequestDetail({

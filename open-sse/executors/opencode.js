@@ -48,6 +48,11 @@ const MAX_SESSION_LENGTH = 256;
 const MAX_TOOL_NAME_LEN = 64;
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeSession";
+const IDENTITY_FIELD = "_opencodeIdentity";
+// ponytail: ceiling 3 — enough to step past a per-identity bucket, cheap enough
+// that a shared-scope 429 does not stall the caller. Raise only with evidence
+// that quota is keyed on the identity we rotate.
+const MAX_ROTATION_ATTEMPTS = 3;
 export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 export const OPENCODE_REQUEST_RE = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -162,6 +167,43 @@ function normalizeSession(value) {
   return normalized;
 }
 
+// Operator knobs from providerStrategies.opencode (the bucket NoAuthProxyCard
+// already writes). Default off so the shipped behaviour is unchanged. Read only
+// when a 429 arrives — no cache, so a toggle in the dashboard takes effect on
+// the very next quota error.
+async function readRotateConfig() {
+  try {
+    const { getSettings } = await import("@/lib/db/index.js");
+    const settings = await getSettings();
+    const override = settings?.providerStrategies?.opencode || {};
+    return {
+      session: override.rotateSessionOn429 === true,
+      identity: override.rotateIdentityOn429 === true,
+    };
+  } catch {
+    // Settings unavailable — keep rotation off rather than guess.
+    return { session: false, identity: false };
+  }
+}
+
+// Real project ids are sha1 hex (git remote hash / directory hash), see
+// packages/core/src/project.ts:287,391 upstream. Mint the same shape so the
+// value stays indistinguishable from a genuine project.
+function randomProjectId(rotation) {
+  return crypto.createHash("sha256").update(`opencode-project\0${rotation}\0${crypto.randomUUID()}`).digest("hex");
+}
+
+// 429 quota envelope: { retryAfter, cap: { reason, scope, limit, usage } }.
+async function readQuotaCap(response) {
+  if (!response?.clone) return null;
+  try {
+    const body = await response.clone().json();
+    return body?.cap && typeof body.cap === "object" ? body.cap : null;
+  } catch {
+    return null;
+  }
+}
+
 function nativeSession(headers) {
   if (!headers || typeof headers !== "object") return null;
   for (const [key, value] of Object.entries(headers)) {
@@ -270,10 +312,16 @@ function isMessagesModel(model) {
   return MESSAGES_MODELS.has(baseModelId(model));
 }
 
-function resolveOpencodeSession(body, credentials, providerSessionId, clientTool) {
+function resolveOpencodeSession(body, credentials, providerSessionId, clientTool, rotation = 0) {
   const headers = credentials?.rawHeaders || {};
   const native = nativeSession(headers);
+  // A client-managed native session is that client's conversation identity:
+  // rotating it would desync the client, so opt-out wins over the retry knob.
   if (native) return native;
+
+  // Retry after a 429 with a freshly minted session. Only reached when the
+  // operator enabled rotation; the default path stays byte-identical.
+  if (rotation > 0) return generateSessionId();
 
   let incoming = null;
   for (const [key, value] of Object.entries(headers)) {
@@ -402,13 +450,14 @@ export class OpenCodeExecutor extends BaseExecutor {
     super("opencode", PROVIDERS.opencode);
   }
 
-  prepareRequestCredentials({ body, credentials, providerSessionId, clientTool } = {}) {
+  prepareRequestCredentials({ body, credentials, providerSessionId, clientTool, rotation = 0, identity = null } = {}) {
     const sourceCredentials = credentials || {};
-    const session = resolveOpencodeSession(body, sourceCredentials, providerSessionId, clientTool);
+    const session = resolveOpencodeSession(body, sourceCredentials, providerSessionId, clientTool, rotation);
 
     return {
       ...sourceCredentials,
       [SESSION_FIELD]: session,
+      ...(identity ? { [IDENTITY_FIELD]: identity } : {}),
     };
   }
 
@@ -457,13 +506,14 @@ export class OpenCodeExecutor extends BaseExecutor {
     const metadata = requestMetadata(args?.model, args?.body, args?.stream);
     try {
       const result = await super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
+      const rotated = await this.retryRotatedOnQuota(args, result);
       args?.log?.debug?.("OPENCODE", "upstream complete", {
         ...metadata,
-        status: result.response?.status,
-        url: safeUpstreamUrl(result.url),
+        status: rotated.response?.status,
+        url: safeUpstreamUrl(rotated.url),
         elapsedMs: Date.now() - startedAt,
       });
-      return result;
+      return rotated;
     } catch (error) {
       args?.log?.debug?.("OPENCODE", "upstream failed", {
         ...metadata,
@@ -472,6 +522,33 @@ export class OpenCodeExecutor extends BaseExecutor {
       });
       throw error;
     }
+  }
+
+  // Retry a 429 with a fresh upstream session (and, when enabled, a fresh
+  // project id) so the retry lands outside the exhausted bucket. Bounded, and
+  // skipped for shared-scope caps: a shared meter is not keyed on the identity
+  // we are about to change, so retrying only burns the caller's time.
+  async retryRotatedOnQuota(args, result) {
+    if (result?.response?.status !== 429) return result;
+    const config = await readRotateConfig();
+    if (!config.session) return result;
+    let last = result;
+    for (let rotation = 1; rotation <= MAX_ROTATION_ATTEMPTS; rotation++) {
+      const cap = await readQuotaCap(last.response);
+      if (cap?.scope === "shared") {
+        args?.log?.debug?.("OPENCODE", `429 cap=${cap.reason || "?"} scope=shared → rotation skipped`);
+        return last;
+      }
+      const identity = config.identity ? randomProjectId(rotation) : null;
+      args?.log?.debug?.("OPENCODE", `429 cap=${cap?.reason || "?"} scope=${cap?.scope || "?"} → rotate #${rotation}`);
+      await last.response?.body?.cancel?.().catch(() => {});
+      last = await super.execute({
+        ...args,
+        credentials: this.prepareRequestCredentials({ ...args, rotation, identity }),
+      });
+      if (last?.response?.status !== 429) return last;
+    }
+    return last;
   }
 
   // Free tier moved from /zen/v1 to /inference/v1 (OpenCode v2); /zen/v1 now
@@ -494,7 +571,8 @@ export class OpenCodeExecutor extends BaseExecutor {
     const isOpencodeDownstream = hasValidOpencodeVersion(downstreamUa);
 
     const session = credentials?.[SESSION_FIELD] || this.prepareRequestCredentials({ credentials })[SESSION_FIELD];
-    const clientIp = lower["x-9r-real-ip"] || lower["x-real-ip"] || "";
+    const peerToken = process.env.NINEROUTER_PEER_TOKEN;
+    const clientIp = peerToken && lower["x-9r-peer-token"] === peerToken ? lower["x-9r-real-ip"] : "";
 
     // Mirrors the v2 CLI. Upstream needs x-opencode-session-id next to
     // x-opencode-session, and rejects any x-opencode-request (v1 only) with 403.
@@ -507,7 +585,7 @@ export class OpenCodeExecutor extends BaseExecutor {
       "x-opencode-session-id": session,
       "x-session-affinity": session,
       "x-session-id": session,
-      "x-opencode-project": lower["x-opencode-project"] || "global",
+      "x-opencode-project": credentials?.[IDENTITY_FIELD] || lower["x-opencode-project"] || "global",
       ...(clientIp ? { "x-real-ip": clientIp } : {}),
       "Accept": stream ? "text/event-stream" : "*/*",
     };

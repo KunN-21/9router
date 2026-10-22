@@ -8,8 +8,8 @@ import { DefaultExecutor } from "open-sse/executors/default.js";
 
 // Regression tests for the OpenCode Free (-free models) 429 fix:
 // 1. versioned official User-Agent (bare "opencode" is still rate-limited by Zen)
-// 2. x-real-ip forwarding so the upstream per-IP quota bucket is the user's own
-// 3. per-request session isolation (singleton executor used to bleed sessions
+// 2. x-real-ip forwarding only when custom-server.js proves the peer address
+// 3. request-local session isolation (singleton executor used to bleed sessions
 //    across concurrent requests via the _currentSessionId instance field)
 describe("OpenCodeExecutor fingerprint (free-tier 429 fix)", () => {
   it("sends the official versioned opencode User-Agent on free-tier requests", () => {
@@ -25,16 +25,23 @@ describe("OpenCodeExecutor fingerprint (free-tier 429 fix)", () => {
     expect(headers["User-Agent"]).toBe("opencode/latest/2.0.29/desktop");
   });
 
-  it("forwards the sanitized peer IP as x-real-ip for per-IP quota buckets", () => {
+  it("forwards the sanitized peer IP only with wrapper proof", () => {
     const ex = new OpenCodeExecutor();
-    const headers = ex.buildHeaders({ rawHeaders: { "x-9r-real-ip": "203.0.113.7" } });
-    expect(headers["x-real-ip"]).toBe("203.0.113.7");
+    vi.stubEnv("NINEROUTER_PEER_TOKEN", "test-peer-token");
+    try {
+      const headers = ex.buildHeaders({ rawHeaders: {
+        "x-9r-real-ip": "203.0.113.7", "x-9r-peer-token": "test-peer-token",
+      } });
+      expect(headers["x-real-ip"]).toBe("203.0.113.7");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
-  it("falls back to the client-supplied x-real-ip when the server did not stamp one", () => {
+  it("ignores client-supplied x-real-ip when the server did not stamp one", () => {
     const ex = new OpenCodeExecutor();
     const headers = ex.buildHeaders({ rawHeaders: { "x-real-ip": "198.51.100.9" } });
-    expect(headers["x-real-ip"]).toBe("198.51.100.9");
+    expect(headers["x-real-ip"]).toBeUndefined();
   });
 
   it("omits x-real-ip when no client IP is known", () => {
@@ -46,16 +53,14 @@ describe("OpenCodeExecutor fingerprint (free-tier 429 fix)", () => {
   it("keeps sessions per-request under concurrency (no singleton bleed)", () => {
     const ex = new OpenCodeExecutor();
     const body = { messages: [{ role: "user", content: "hi" }] };
-    const credA = { rawHeaders: { "x-client-request-id": "conv-a" } };
-    const credB = { rawHeaders: { "x-client-request-id": "conv-b" } };
+    const credA = { rawHeaders: { "x-opencode-session": "conv-a" } };
+    const credB = { rawHeaders: { "x-opencode-session": "conv-b" } };
+    const headersFor = credentials => ex.buildHeaders(ex.prepareRequestCredentials({ body, credentials }));
 
-    ex.transformRequest("deepseek-v4-flash-free", body, true, credA);
-    const hA = ex.buildHeaders(credA);
-    ex.transformRequest("deepseek-v4-flash-free", body, true, credB);
-    const hB = ex.buildHeaders(credB);
-    // A's next turn must NOT pick up B's session (old code: instance field bleed)
-    ex.transformRequest("deepseek-v4-flash-free", body, true, credA);
-    const hA2 = ex.buildHeaders(credA);
+    const hA = headersFor(credA);
+    const hB = headersFor(credB);
+    // A's next turn must NOT pick up B's session (old code: instance field bleed).
+    const hA2 = headersFor(credA);
 
     expect(hA["x-opencode-session"]).toBe(hA2["x-opencode-session"]);
     expect(hA["x-opencode-session"]).not.toBe(hB["x-opencode-session"]);

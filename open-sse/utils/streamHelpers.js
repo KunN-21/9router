@@ -1,4 +1,5 @@
 import { FORMATS } from "../translator/formats.js";
+import { fallbackToolCallId } from "../translator/concerns/toolCall.js";
 import { buildErrorBody } from "./error.js";
 import { SSE_DONE } from "./sseConstants.js";
 
@@ -63,6 +64,28 @@ export function hasValuableContent(chunk, format) {
   }
 
   return true; // Other formats: keep all chunks
+}
+
+// Keep tool-call identities stable within each choice, including missing or late IDs.
+export function ensureStreamToolCallIds(chunk, seenIds) {
+  if (!Array.isArray(chunk?.choices)) return false;
+  let changed = false;
+  for (const [choiceIndex, choice] of chunk.choices.entries()) {
+    const calls = choice?.delta?.tool_calls;
+    if (!Array.isArray(calls)) continue;
+    for (const [callIndex, call] of calls.entries()) {
+      if (!call || typeof call !== "object") continue;
+      const key = (choice.index ?? choiceIndex) + "_" + (call.index ?? callIndex);
+      const supplied = typeof call.id === "string" && call.id.length > 0 ? call.id : null;
+      const id = seenIds.get(key) || supplied || fallbackToolCallId(key);
+      seenIds.set(key, id);
+      if (call.id !== id) {
+        call.id = id;
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 // Fix invalid id (generic or too short)
