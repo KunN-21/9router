@@ -1,4 +1,4 @@
-# Chưa phát hành — bổ sung trên v0.5.99-local.4 (2026-10-22)
+# Chưa phát hành — bổ sung trên v0.5.99-local.5 (2026-10-22)
 
 - Tích hợp chọn lọc [Yoganataa/9router PR #15](https://github.com/Yoganataa/9router/pull/15): reasoning theo transport, GLM-5.3 Flash Free dùng `reasoning_effort`, DeepSeek V4.1 Flash Free giữ `low|high|max`, bổ sung model và định tuyến Chat Completions cho Zen V4.1. Giữ chuẩn hóa Responses của bản local, không thêm provider Muse độc lập hoặc kéo version/workflow phát hành upstream.
 - Khôi phục tên tool do fingerprint đổi trên luồng passthrough. Bổ sung ID cho tool-call thiếu ID, giữ ổn định khi upstream gửi ID muộn và tách ID theo choice/index.
