@@ -1,3 +1,14 @@
+# Chưa phát hành — bổ sung trên v0.5.99-local.4 (2026-10-22)
+
+- Tích hợp chọn lọc [Yoganataa/9router PR #15](https://github.com/Yoganataa/9router/pull/15): reasoning theo transport, GLM-5.3 Flash Free dùng `reasoning_effort`, DeepSeek V4.1 Flash Free giữ `low|high|max`, bổ sung model và định tuyến Chat Completions cho Zen V4.1. Giữ chuẩn hóa Responses của bản local, không thêm provider Muse độc lập hoặc kéo version/workflow phát hành upstream.
+- Khôi phục tên tool do fingerprint đổi trên luồng passthrough. Bổ sung ID cho tool-call thiếu ID, giữ ổn định khi upstream gửi ID muộn và tách ID theo choice/index.
+- Proxy pool của provider no-auth có định danh và loại trừ theo request. Chỉ failover lỗi server không liên quan quota/chính sách. Không đổi egress sau 401/402/403/429 hoặc lỗi quota, FreeTierError, RegionError, DataPolicyError. Hết pool đã cấu hình thì dừng, không chuyển sang direct.
+- Giữ session OpenCode khi lịch sử assistant xuất hiện và không dùng `x-client-request-id` làm session. Giữ native session cùng conversation ID tường minh. Chỉ forward IP được custom server xác nhận bằng peer token, không tin `x-real-ip` client tự đặt.
+- Không thay đổi hạn mức quota upstream và không giả IP. Không thay đổi request-ID hash vì header `x-opencode-request` không được gửi trong giao thức hiện tại. Chưa pack/install/publish hoặc đổi version.
+- Đọc đúng envelope 429 của OpenCode Free (`retryAfter` + `cap.reason/scope/limit/usage`) thay vì backoff mù 2 giây–5 phút trong khi upstream có thể khoá tới nửa đêm UTC; cooldown giờ bám `retryAfter` thật và log `QUOTA` ghi rõ meter nào bị chạm.
+- Thêm tuỳ chọn tự phục hồi sau 429 trong thẻ provider OpenCode (`providerStrategies.opencode`): `rotateSessionOn429` mint `x-opencode-session` mới và thử lại tối đa 3 lần; `rotateIdentityOn429` (chỉ bật được khi tuỳ chọn trên đang bật) gửi kèm `x-opencode-project` dạng sha1 giống project id thật. Cả hai mặc định **tắt**. Bỏ qua xoay khi 429 báo `scope=shared`, và giữ nguyên session do client tự gửi. Mỗi lần thử lại là một request thật lên upstream.
+- **Chưa xác minh** quota free tier được khoá theo khoá nào: `ipRateLimiter.ts` mà các ghi chú cũ dẫn ra không còn trong `sst/opencode`, và các giá trị `rotation`/`session-spread`/`short-sessions` chỉ tồn tại dưới dạng enum trong `inference/openapi.json`, không có implementation hay tài liệu. Vì vậy tuỳ chọn xoay ở trên là thử nghiệm có giới hạn, không phải cơ chế tăng hạn mức đã được chứng minh.
+
 # v0.5.99-local.4 (2026-10-15)
 
 - Tổng hợp local.2/local.3 kể từ local.1 đã phát hành: giữ Codex Fast (client-intent, per-account priority, copy-isolation), Custom Headers không giới hạn (UI CustomConfigCard, API overrides atomic, last case-insensitive dispatch, log mask), tích hợp chọn lọc Gates A–E, OpenCode PR #4806 (native IDs, session headers, caches, policy errors) và PR #4860 (fingerprint v2, endpoint free tier `/inference/v1/*`, ưu tiên định tuyến `/inference/v1/responses` cho Muse Spark).

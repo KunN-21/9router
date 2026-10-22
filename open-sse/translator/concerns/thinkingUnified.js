@@ -129,6 +129,10 @@ const NATIVE_ONLY_FORMATS = new Set(["gemini-level", "gemini-budget", "claude-bu
 
 function resolveFormat(targetFormat, model, provider) {
   if (targetFormat === "commandcode") return "commandcode";
+  const transportFmt = provider
+    ? PROVIDERS[provider]?.transports?.find(t => t.format === targetFormat)?.thinkingFormat
+    : null;
+  if (transportFmt) return transportFmt;
   if (targetFormat === "openai-responses" || targetFormat === "openai-response") return "openai-responses";
   const providerFmt = provider ? PROVIDERS[provider]?.thinkingFormat : null;
   if (providerFmt) return providerFmt;
@@ -388,7 +392,9 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display, originalRea
       // on opencode-go, probed live) 400 on "max". Clamp to high when declared
       // levels exclude it.
       const level = toLevel(eff);
-      const want = level === "xhigh" || level === "max" ? "max" : "high";
+      const want = level === "xhigh" || level === "max" ? "max"
+        : (level === "low" || level === "minimal") && supportedLevels?.includes("low") ? "low"
+        : "high";
       body.reasoning_effort = want === "max" && supportedLevels && !supportedLevels.includes("max") ? "high" : want;
       break;
     }
