@@ -291,10 +291,74 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   });
 }
 
+// OpenCode's free-tier gate answers 403 `FreeTierError` when the request exits
+// from an IP it has flagged — the transport itself succeeded, so the
+// proxy-failure fallback above never sees it and every retry keeps leaving
+// through the same flagged proxy. Live measurement (upstream #4983): identical
+// body and headers in the same minute — flagged pool egress → 403
+// FreeTierError, direct egress → 200.
+const FREE_TIER_ERROR_MARKER = "FreeTierError";
+
+/** Rebuild a response whose body we buffered while inspecting it. */
+function bufferedResponse(text, original) {
+  const headers = new Headers(original.headers);
+  // The body was decoded while reading, so upstream framing no longer applies.
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  return new Response(text, { status: original.status, statusText: original.statusText, headers });
+}
+
+/**
+ * After a proxied attempt, replay once on the direct egress when upstream
+ * rejected the *proxy's IP* (403 FreeTierError). A body already consumed by
+ * the first attempt cannot be resent, and strictProxy keeps its contract of
+ * never leaving over another path — both return the rejection as-is.
+ */
+async function replayFreeTierRejectionDirect(url, options, proxied) {
+  if (proxied?.status !== 403) return proxied;
+  let text;
+  try {
+    text = await proxied.text();
+  } catch {
+    return proxied;
+  }
+  if (!text.includes(FREE_TIER_ERROR_MARKER)) return bufferedResponse(text, proxied);
+  if (options?.body && typeof options.body.getReader === "function" && options.body.locked) {
+    return bufferedResponse(text, proxied);
+  }
+  console.warn(`[ProxyFetch] Proxy egress rejected by the OpenCode free-tier gate (403 FreeTierError); replaying direct: ${targetHost(url)}`);
+  try {
+    return await originalFetch(url, options);
+  } catch (directError) {
+    // The direct replay failed outright — surface the original rejection.
+    console.warn(`[ProxyFetch] Direct replay failed: ${directError.message}`);
+    return bufferedResponse(text, proxied);
+  }
+}
+
+function targetHost(url) {
+  try {
+    return new URL(typeof url === "string" ? url : url.toString()).host;
+  } catch {
+    return String(url);
+  }
+}
+
+// Client-identity headers a relay must never replay upstream: they describe who
+// called the relay, not which egress the relay is. Forwarding them re-keys the
+// request onto the caller's own quota bucket.
+const RELAY_STRIPPED_CLIENT_HEADERS = new Set([
+  "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+  "x-forwarded-port", "x-real-ip", "cf-connecting-ip", "cf-connecting-ipv6",
+  "cf-ipcountry", "cf-ray", "cf-visitor", "cf-ew-via", "cdn-loop",
+  "true-client-ip", "fastly-client-ip", "x-client-ip", "x-cluster-client-ip",
+  "x-9r-real-ip",
+]);
+
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
 
-  // Vercel relay: forward request via relay headers
+  // Vercel/Cloudflare/Deno relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
   if (vercelRelayUrl) {
     const parsed = new URL(targetUrl);
@@ -306,7 +370,29 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
-    return originalFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+    // A relay exists to change the egress address. Client-identity forwarding
+    // headers would be replayed upstream and re-key the request onto the
+    // caller's own bucket, making the whole pool cosmetic. Callers may spell
+    // them in any case, so match case-insensitively.
+    for (const key of Object.keys(relayHeaders)) {
+      if (RELAY_STRIPPED_CLIENT_HEADERS.has(key.toLowerCase())) delete relayHeaders[key];
+    }
+    try {
+      const viaRelay = await originalFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+      // Relay egress flagged by the free-tier gate: replay once directly, same
+      // contract as the proxy path (strictProxy passes the rejection through).
+      if (proxyOptions.strictProxy === true) return viaRelay;
+      return await replayFreeTierRejectionDirect(url, options, viaRelay);
+    } catch (relayError) {
+      // Silent fallback to direct is worse than failing: the caller believes
+      // it is on a different egress while every request keeps hitting the
+      // exhausted one. Only honour the fallback when the pool says it is fine.
+      if (proxyOptions.strictProxy === true) {
+        throw new Error(`[ProxyFetch] Relay required but failed (strictProxy=true): ${relayError.message}`);
+      }
+      console.warn(`[ProxyFetch] Relay failed, falling back to direct: ${relayError.message}`);
+      return originalFetch(url, options);
+    }
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
@@ -340,7 +426,10 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   if (proxyUrl) {
     try {
       const dispatcher = await getDispatcher(proxyUrl);
-      return await originalFetch(url, { ...options, dispatcher });
+      const proxied = await originalFetch(url, { ...options, dispatcher });
+      // strictProxy never leaves the configured path — pass the rejection through.
+      if (proxyOptions?.strictProxy === true) return proxied;
+      return await replayFreeTierRejectionDirect(url, options, proxied);
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {

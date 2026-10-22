@@ -734,6 +734,14 @@ export default function ProxyPoolsPage() {
                     Last tested: {formatDateTime(pool.lastTestedAt)}
                     {pool.lastError ? ` · ${pool.lastError}` : ""}
                   </p>
+                  {/* A relay that replays the caller's forwarding headers cannot
+                      move the egress, so the whole pool shares one quota bucket. */}
+                  {typeof pool.lastError === "string" && /forwards your client IP/i.test(pool.lastError) ? (
+                    <p className="mt-2 inline-flex items-start gap-1.5 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-400">
+                      <span className="material-symbols-outlined text-[14px]">warning</span>
+                      <span>This relay passes your own IP upstream, so it cannot escape a per-egress quota. Redeploy it from 9Router (templates now strip forwarding headers) or use a real HTTP/SOCKS proxy.</span>
+                    </p>
+                  ) : null}
                   </div>
                 </div>
 

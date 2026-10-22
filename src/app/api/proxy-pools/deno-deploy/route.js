@@ -19,6 +19,16 @@ const DENO_RELAY_CODE = `Deno.serve(async (request) => {
   newHeaders.delete("x-relay-target");
   newHeaders.delete("x-relay-path");
   newHeaders.delete("host");
+  // Forwarding/proxy identity headers describe the CLIENT, not this relay.
+  // Passing them through makes the target meter our caller's address instead
+  // of the relay's, so every egress in a pool collapses onto one bucket.
+  for (const h of [
+    "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+    "x-forwarded-port", "x-real-ip", "cf-connecting-ip", "cf-connecting-ipv6",
+    "cf-ipcountry", "cf-ray", "cf-visitor", "cf-ew-via", "cdn-loop",
+    "true-client-ip", "fastly-client-ip", "x-client-ip", "x-cluster-client-ip",
+    "x-9r-real-ip", "x-9r-peer-token",
+  ]) newHeaders.delete(h);
 
   const init = {
     method: request.method,
