@@ -7,7 +7,15 @@ import { unavailableResponse, clientStatusForBreakerOpen } from "../utils/error.
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
 import { ERROR_TYPES } from "../config/errorConfig.js";
+import { parseModel } from "./model.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { inspectSSELine, isNoRetryFinish } from "./emptyFailover.js";
+import {
+  getStickyComboModel,
+  setStickyComboModel,
+  clearStickyComboSession,
+  orderModelsByChoice,
+} from "./systemoneRouter.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -142,6 +150,10 @@ function extractFrameErrorFromLine(line, lastEvent = null) {
 // finish_reason, message envelopes and zero-token usage frames are all things a
 // provider emits *around* an answer. A stream made only of those is precisely
 // the empty stream #3463 is about, so none of them count as content on their own.
+//
+// Reasoning DOES count here, on purpose: a slow reasoning model that has been
+// thinking for 90s is producing real work, and cutting it off mid-thought loses
+// the turn (see the combo tests for slow reasoning streams).
 function frameCarriesContent(line) {
   if (!line.startsWith("data:")) return false;
   const payload = line.slice(5).trim();
@@ -157,14 +169,14 @@ function frameCarriesContent(line) {
   // An error frame is never success content.
   if (extractFrameError(parsed)) return false;
 
-  // A usage frame counts only if it reports generated output. A frame carrying
+  // A usage frame counts only if it reports generated output; a frame carrying
   // prompt tokens and completion_tokens: 0 is an accounting record, not an answer.
   if (hasOutputTokens(parsed.usage) || hasOutputTokens(parsed.response?.usage)) return true;
 
-  // OpenAI chat: text, reasoning, or a tool call.
+  // OpenAI chat: text or a tool call. Reasoning is NOT content here — see
+  // frameCarriesReasoning and the mid-thought commit in the peek's tail.
   const delta = parsed.choices?.[0]?.delta;
   if (nonEmptyString(delta?.content)) return true;
-  if (nonEmptyString(delta?.reasoning_content) || nonEmptyString(delta?.reasoning)) return true;
   if (delta?.tool_calls?.length || delta?.function_call) return true;
 
   // Claude: only the delta events carry payload. message_start/content_block_start
@@ -172,35 +184,31 @@ function frameCarriesContent(line) {
   // arrives there and the arguments follow as input_json_delta.
   if (parsed.type === "content_block_delta") {
     const d = parsed.delta;
-    if (nonEmptyString(d?.text) || nonEmptyString(d?.partial_json) || nonEmptyString(d?.thinking)) return true;
+    if (nonEmptyString(d?.text) || nonEmptyString(d?.partial_json)) return true;
   }
   if (parsed.type === "content_block_start" && parsed.content_block?.type === "tool_use") return true;
 
   // OpenAI Responses API: output_text/function-call argument deltas, done text, item done, or completed output.
-  // Complete payloads also count: reasoning text done, reasoning summary done,
-  // reasoning item done (summary text or item.text fallback), message item done.
-  if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
-  if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
-  if (parsed.type === "response.reasoning_summary_text.done" && nonEmptyString(parsed.text)) return true;
-  if (parsed.type === "response.reasoning_text.done" && nonEmptyString(parsed.text)) return true;
-  if (parsed.type === "response.output_item.done" && parsed.item?.type === "reasoning") {
-    const summary = parsed.item.summary;
-    if (Array.isArray(summary) && summary.some((p) => nonEmptyString(p?.text))) return true;
-    if (nonEmptyString(parsed.item.text)) return true;
+  // Complete payloads also count: message item done and completed output.
+  if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) {
+    if (!parsed.type.startsWith("response.reasoning")) return true;
   }
+  if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
   if (parsed.type === "response.content_part.done") {
     const part = parsed.part || parsed.content_part;
     if (nonEmptyString(part?.text)) return true;
   }
-  if (parsed.type === "response.output_item.done") {
-    if (parsed.item?.type === "message") {
-      const parts = parsed.item.content;
-      if (Array.isArray(parts) && parts.some((p) => nonEmptyString(p?.text))) return true;
-      if (nonEmptyString(parsed.item.text)) return true;
-    }
+  if (parsed.type === "response.output_item.added" || parsed.type === "response.output_item.done") {
+    // A tool-call item is announced on `added` (name + call_id); either event
+    // proves the model acted.
     if (parsed.item?.type === "function_call" || parsed.item?.type === "custom_tool_call") {
       if (parsed.item.name || parsed.item.call_id || parsed.item.arguments) return true;
     }
+  }
+  if (parsed.type === "response.output_item.done" && parsed.item?.type === "message") {
+    const parts = parsed.item.content;
+    if (Array.isArray(parts) && parts.some((p) => nonEmptyString(p?.text))) return true;
+    if (nonEmptyString(parsed.item.text)) return true;
   }
   if (parsed.type === "response.completed" || parsed.type === "response.done") {
     const output = parsed.response?.output || parsed.output;
@@ -233,6 +241,57 @@ function nonEmptyString(v) {
   return typeof v === "string" && v.length > 0;
 }
 
+// Reasoning is progress, not an answer: a slow reasoning model that has been
+// thinking for 90s is doing real work, and cutting the turn off mid-thought loses
+// it. But a turn that FINISHED having produced only reasoning is still empty, so
+// this only feeds the "still thinking when the peek gave up" commit below.
+function frameCarriesReasoning(line) {
+  if (!line.startsWith("data:")) return false;
+  const payload = line.slice(5).trim();
+  if (!payload || payload === "[DONE]") return false;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return false;
+  }
+  if (extractFrameError(parsed)) return false;
+
+  const delta = parsed.choices?.[0]?.delta;
+  if (nonEmptyString(delta?.reasoning_content) || nonEmptyString(delta?.reasoning)) return true;
+  if (parsed.type === "content_block_delta" && nonEmptyString(parsed.delta?.thinking)) return true;
+
+  // Gemini thought parts.
+  const parts = parsed.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts) && parts.some((p) => p?.thought === true && nonEmptyString(p?.text))) return true;
+
+  if (typeof parsed.type === "string" && parsed.type.startsWith("response.reasoning")) {
+    if (nonEmptyString(parsed.delta) || nonEmptyString(parsed.text)) return true;
+  }
+  if (parsed.type === "response.output_item.done" && parsed.item?.type === "reasoning") {
+    const summary = parsed.item.summary;
+    return (Array.isArray(summary) && summary.some((p) => nonEmptyString(p?.text))) || nonEmptyString(parsed.item.text);
+  }
+  return false;
+}
+
+// Terminal markers across every client format: OpenAI chat finish_reason, Claude
+// stop_reason, Responses completed/incomplete/failed, Claude message_stop.
+const TERMINAL_MARKERS = ["finish_reason", "stop_reason", "incomplete", "completed", "failed", "message_stop"];
+
+function looksTerminal(line) {
+  return TERMINAL_MARKERS.some((marker) => line.includes(marker));
+}
+
+// Finish reason carried by one SSE data frame, normalized to the OpenAI vocabulary
+// so isNoRetryFinish applies to every client format. Only frames that can carry a
+// terminal are classified — the peek is on the request hot path.
+function frameFinishReason(line) {
+  if (!looksTerminal(line)) return null;
+  return inspectSSELine(line)?.finishReason || null;
+}
+
 // Usage is proof of an answer only when it reports generated tokens. Mirrors the
 // completion/output-token check rather than accepting any usage object, so a
 // prompt-tokens-only record is not mistaken for output.
@@ -251,10 +310,12 @@ function hasOutputTokens(usage) {
  * keepalives, and close cleanly. Deciding success from status alone hands that
  * unusable stream to the client and skips the remaining combo models (#3463).
  *
- * Returns { hasContent, body, timedOut }. When content is found, `body` replays
- * every byte already pulled off the socket and then continues from the live
- * reader, so nothing is dropped — the same re-assembly qoder.js uses for its
- * own first-frame peek. Non-SSE responses are reported as content without the
+ * Returns { hasContent, body, timedOut, finishReason }. `body` replays every byte
+ * already pulled off the socket and then continues from the live reader, so
+ * nothing is dropped — the same re-assembly qoder.js uses for its own first-frame
+ * peek. It is returned for an empty stream too, so a legitimately-empty finish
+ * (content_filter) can be handed to the client as-is instead of being replaced by
+ * a synthesized error. Non-SSE responses are reported as content without the
  * body being touched at all.
  *
  * The wait is bounded by peekTimeoutMs() (the shorter of the existing
@@ -281,6 +342,8 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
   let currentEvent = null;
   let streamError = null;
   let hasContent = false;
+  let sawReasoning = false;
+  let finishReason = null;
   let upstreamDone = false;
   let timedOut = false;
   let settled = false;
@@ -337,6 +400,7 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
               } else if (frameCarriesContent(tail)) {
                 hasContent = true;
               }
+              finishReason = frameFinishReason(tail) || finishReason;
             }
             settled = true;
             return "done";
@@ -363,6 +427,7 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
               break;
             }
             if (frameCarriesContent(line)) { hasContent = true; break; }
+            finishReason = frameFinishReason(line) || finishReason;
           }
           if (streamError) { settled = true; return "error_frame"; }
           if (hasContent) { settled = true; return "content"; }
@@ -410,12 +475,8 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
     return { hasContent: false, body: null, timedOut: false, error: streamError };
   }
 
-  if (!hasContent) {
-    await reader.cancel().catch(() => {});
-    return { hasContent: false, body: null, timedOut, error: null };
-  }
-
-  const body = new ReadableStream({
+  // Replay the buffered bytes, then continue from the live reader.
+  const replayBody = () => new ReadableStream({
     start(controller) {
       for (const chunk of rawChunks) controller.enqueue(chunk);
       rawChunks.length = 0;
@@ -436,7 +497,13 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
     }
   });
 
-  return { hasContent: true, body, timedOut: false };
+  if (!hasContent) {
+    // Empty stream. Keep the bytes: a no-retry finish (content filter) must be
+    // handed to the client exactly as the provider sent it.
+    return { hasContent: false, body: replayBody(), timedOut, error: null, finishReason };
+  }
+
+  return { hasContent: true, body: replayBody(), timedOut: false, finishReason };
 }
 
 // Flatten tool turns into prose so panel models keep the context but can't loop
@@ -665,8 +732,13 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
  * @param {string} [comboName] - Combo name to reset; omit to clear all
  */
 export function resetComboRotation(comboName) {
-  if (comboName) comboRotationState.delete(comboName);
-  else comboRotationState.clear();
+  if (comboName) {
+    comboRotationState.delete(comboName);
+    clearStickyComboSession(comboName);
+  } else {
+    comboRotationState.clear();
+    clearStickyComboSession();
+  }
 }
 
 /**
@@ -690,6 +762,46 @@ export function getComboModelsFromData(modelStr, combosData) {
 }
 
 /**
+ * Detect whether a 2xx JSON response contains zero usable content
+ * (e.g. empty assistant message with in_progress/incomplete)
+ * so combo fallback can continue to the next model.
+ */
+export function isZeroContentResponse(data) {
+  if (!data || typeof data !== "object") return false;
+
+  // OpenAI chat format
+  if (Array.isArray(data.choices)) {
+    if (data.choices.length === 0) return true;
+    const choice = data.choices[0];
+    if (!choice) return true;
+
+    const msg = choice.message || choice.delta;
+    const content = msg?.content;
+    const hasContent = typeof content === "string" ? content.trim().length > 0 : (Array.isArray(content) && content.length > 0);
+    const hasToolCalls = (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) || Boolean(msg?.function_call);
+    const hasReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content.trim().length > 0 : false;
+
+    const finish = choice.finish_reason;
+    const isNormalFinish = finish === "stop" || finish === "length" || finish === "tool_calls" || finish === "function_call";
+
+    if (!hasContent && !hasToolCalls && !hasReasoning && (!isNormalFinish || finish === "in_progress" || finish === "incomplete")) {
+      return true;
+    }
+  }
+
+  // Anthropic messages format
+  if (Array.isArray(data.content)) {
+    const hasContent = data.content.some((c) => (c.type === "text" && c.text?.trim().length > 0) || c.type === "tool_use");
+    const stopReason = data.stop_reason;
+    if (!hasContent && (!stopReason || stopReason === "in_progress" || stopReason === "incomplete")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Handle combo chat with fallback
  * @param {Object} options
  * @param {Object} options.body - Request body
@@ -697,13 +809,116 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr) => Promise<Response>
  * @param {Object} options.log - Logger object
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
- * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
+ * @param {string} [options.comboStrategy] - Strategy: "fallback", "round-robin", or "smart"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {boolean} [options.autoSwitch=true] - Capability auto-switching
+ * @param {string|null} [options.sessionId=null] - Client session identifier for prompt cache retention
+ * @param {string} [options.smartPolicy="smart"] - Policy: "smart" (adaptive ≥80%), "strict" (lock 1st model), "per-turn", or "custom"
+ * @param {boolean} [options.sessionSticky=true] - Keep chosen model across session requests to retain prompt cache
+ * @param {number} [options.confidenceThreshold=0.8] - Minimum confidence required for model switch (0-1)
+ * @param {Function|null} [options.resolveSmartChoice=null] - Smart router resolver callback: (body, models) => Promise<{ choice, probabilities, confidence } | null>
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, signal = null }) {
-  // Apply rotation strategy if enabled
-  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+export async function handleComboChat({
+  body,
+  models,
+  handleSingleModel,
+  log,
+  comboName,
+  comboStrategy,
+  comboStickyLimit = 1,
+  autoSwitch = true,
+  signal = null,
+  sessionId = null,
+  smartPolicy = "smart",
+  sessionSticky = true,
+  confidenceThreshold = 0.8,
+  resolveSmartChoice = null,
+}) {
+  let rotatedModels = models;
+  let activeStickyModel = null;
+
+  if (comboStrategy === "smart") {
+    const policy = (typeof smartPolicy === "string" ? smartPolicy : "smart").toLowerCase();
+    const isPerTurn = policy === "per-turn" || sessionSticky === false;
+    const isStrict = policy === "strict";
+
+    let switchThreshold = 0.8;
+    if (policy === "custom") {
+      const custom = Number(confidenceThreshold);
+      if (Number.isFinite(custom) && custom > 0) switchThreshold = custom;
+    } else if (policy === "smart-switch-70") switchThreshold = 0.7;
+    else if (policy === "smart-switch-90") switchThreshold = 0.9;
+    else if (policy.startsWith("smart-switch") || policy === "smart") {
+      const custom = Number(confidenceThreshold);
+      if (Number.isFinite(custom) && custom > 0) switchThreshold = custom;
+    }
+
+    if (!isPerTurn && sessionId) {
+      activeStickyModel = getStickyComboModel(comboName, sessionId, models);
+    }
+
+    if (activeStickyModel) {
+      if (isStrict) {
+        // Strict Lock: re-use sticky model without invoking System One (0ms, 0 extra tokens)
+        rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+        log.info("COMBO", `smart-router [strict] locked session "${sessionId}" → ${activeStickyModel}`);
+      } else if (typeof resolveSmartChoice === "function") {
+        // Smart Switch (Adaptive): check if the user's task drastically shifted
+        try {
+          const smartResult = await resolveSmartChoice(body, models);
+          const newChoice = smartResult?.choice;
+          const conf = typeof smartResult?.confidence === "number" ? smartResult.confidence : null;
+
+          if (newChoice && newChoice !== activeStickyModel && models.includes(newChoice) && conf !== null && conf >= switchThreshold) {
+            // Task changed with high confidence: switch model and update session
+            rotatedModels = orderModelsByChoice(models, smartResult);
+            log.info("COMBO", `smart-router [smart-switch] task changed → switched from ${activeStickyModel} to ${newChoice} (confidence: ${conf} >= ${switchThreshold})`);
+            if (sessionId) {
+              setStickyComboModel(comboName, sessionId, newChoice);
+              activeStickyModel = newChoice;
+            }
+          } else {
+            // Stay on current model to preserve warm prompt cache
+            rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+            log.info("COMBO", `smart-router [smart-switch] retained prompt cache model "${activeStickyModel}"`);
+          }
+        } catch (err) {
+          // Fail open to active sticky model
+          rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+          log.warn("COMBO", `smart-router error, retained model "${activeStickyModel}"`, { error: err?.message || String(err) });
+        }
+      } else {
+        rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+      }
+    } else if (typeof resolveSmartChoice === "function") {
+      // Turn 1 or per-turn: evaluate System One to select initial model
+      try {
+        const smartResult = await resolveSmartChoice(body, models);
+        const conf = typeof smartResult?.confidence === "number" ? smartResult.confidence : null;
+
+        if (smartResult?.choice && models.includes(smartResult.choice)) {
+          if (switchThreshold > 0 && conf !== null && conf < switchThreshold) {
+            log.info("COMBO", `smart-router confidence (${conf}) below threshold (${switchThreshold}), fallback to order: [${models.join(", ")}]`);
+          } else {
+            rotatedModels = orderModelsByChoice(models, smartResult);
+            log.info("COMBO", `smart-router selected ${smartResult.choice} (confidence: ${conf ?? "N/A"})`);
+            if (!isPerTurn && sessionId) {
+              setStickyComboModel(comboName, sessionId, smartResult.choice);
+              activeStickyModel = smartResult.choice;
+            }
+          }
+        } else {
+          log.info("COMBO", `smart-router no decision, fallback to order: [${models.join(", ")}]`);
+        }
+      } catch (err) {
+        log.warn("COMBO", `smart-router error, fallback to order: [${models.join(", ")}]`, { error: err?.message || String(err) });
+      }
+    }
+  } else {
+    // Apply rotation strategy if enabled
+    rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+  }
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
@@ -723,6 +938,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   let earliestRetryAfter = null;
   let lastStatus = null;
   let lastNoContentTimeout = false;
+  let requestScopedResult = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
     // Synthetic-timeout state belongs to the current attempt only: clear it up
@@ -752,7 +968,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // open an SSE stream, send nothing but keepalives and close cleanly; that
       // must fall through to the next model rather than be handed to the client.
       if (result.ok) {
-        const { hasContent, body: replayBody, timedOut, aborted, error: streamError } = await peekStreamForContent(result, { signal });
+        const { hasContent, body: replayBody, timedOut, aborted, error: streamError, finishReason } = await peekStreamForContent(result, { signal });
         if (aborted || signal?.aborted) {
           await replayBody?.cancel?.(signal?.reason).catch(() => {});
           lastError = signal?.reason?.message || "Request aborted";
@@ -760,8 +976,32 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
           break;
         }
         if (hasContent) {
-          log.info("COMBO", `Model ${modelStr} succeeded`);
-          if (!replayBody) return result;
+          if (!replayBody) {
+            // Non-SSE body (non-streaming JSON, audio, an image). A zero-content JSON
+            // answer on a non-final seat is still not an answer — the next member may
+            // serve the request. clone() keeps the caller's body readable either way.
+            const isLastModel = i === rotatedModels.length - 1;
+            const contentType = result.headers?.get?.("content-type") || "";
+            if (!isLastModel && contentType.includes("application/json")) {
+              try {
+                const peekBody = await result.clone().json();
+                if (isZeroContentResponse(peekBody)) {
+                  log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
+                  if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+                    clearStickyComboSession(comboName, sessionId);
+                  }
+                  lastError = "Zero usable content";
+                  lastStatus = 200;
+                  continue;
+                }
+              } catch {
+                // Ignore JSON parse errors
+              }
+            }
+            log.info("COMBO", `Model ${modelStr} succeeded`);
+            return result;
+          }
+          log.info("COMBO", `Model ${modelStr} succeeded${timedOut ? " (peek deadline; committed)" : ""}`);
           return new Response(replayBody, {
             status: result.status,
             statusText: result.statusText,
@@ -797,17 +1037,41 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
           continue;
         }
 
-        lastNoContentTimeout = timedOut === true;
-        lastError = lastNoContentTimeout ? "provider timed out waiting for stream content" : "provider returned an empty stream";
+        // Empty generation. Fall through to the next candidate, except for a
+        // legitimately empty class (content filter) which recurs on every member —
+        // hand that stream back as-is.
+        const reasonLabel = finishReason || "no-content";
+        if (isNoRetryFinish(finishReason)) {
+          log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — no-retry class, returning as-is`);
+          return new Response(replayBody, {
+            status: result.status,
+            statusText: result.statusText,
+            headers: result.headers,
+          });
+        }
+
+        if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+          clearStickyComboSession(comboName, sessionId);
+        }
+        // Drain/close the discarded stream in the background so its usage logging still runs.
+        replayBody?.cancel?.().catch(() => {});
+
+        lastNoContentTimeout = timedOut === true && !finishReason;
+        lastError = lastNoContentTimeout ? "provider timed out waiting for stream content" : `empty generation (${reasonLabel})`;
         lastStatus = lastNoContentTimeout ? HTTP_STATUS.GATEWAY_TIMEOUT : HTTP_STATUS.SERVICE_UNAVAILABLE;
         lastErrorType = lastNoContentTimeout ? ERROR_TYPES[HTTP_STATUS.GATEWAY_TIMEOUT].type : null;
         lastErrorCode = lastNoContentTimeout ? ERROR_TYPES[HTTP_STATUS.GATEWAY_TIMEOUT].code : null;
-        if (timedOut) {
+        if (lastNoContentTimeout) {
           log.warn("COMBO", `Model ${modelStr} timed out waiting for stream content, trying next`);
         } else {
           log.warn("COMBO", `Model ${modelStr} returned an empty stream, trying next`);
         }
         continue;
+      }
+
+      // If the model that failed was the session-sticky model, clear it so next turns re-evaluate
+      if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+        clearStickyComboSession(comboName, sessionId);
       }
 
       // Extract error info from response
@@ -834,11 +1098,27 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       }
 
       // Check if should fallback to next model
-      const { shouldFallback, cooldownMs } = checkFallbackError(result.status, errorText);
+      const { provider } = parseModel(modelStr);
+      const { shouldFallback, cooldownMs, requestScoped } = checkFallbackError(result.status, errorText, 0, provider);
 
-      if (!shouldFallback) {
+      if (!shouldFallback && !requestScoped) {
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
         return result;
+      }
+
+      // A request-scoped 4xx (validation failure, unsupported parameter, context
+      // overflow) says this member cannot serve THIS request — not that the
+      // credential is unhealthy. Members run on different providers with
+      // different validation, so the next member may well serve it. Advance
+      // without a cooldown, and without waiting: there is nothing to recover.
+      // checkFallbackError() reports no account fallback here on purpose (a
+      // request-scoped fault must not evict a healthy account from rotation).
+      if (requestScoped) {
+        log.warn("COMBO", `Model ${modelStr} rejected the request (${result.status}), trying next`, { status: result.status });
+        lastError = errorText || String(result.status);
+        if (!lastStatus) lastStatus = result.status;
+        if (!requestScopedResult) requestScopedResult = result;
+        continue;
       }
 
       // For transient errors (503/502/504), wait for cooldown before falling through
@@ -856,10 +1136,23 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
       // Catch unexpected exceptions to ensure fallback continues
+      if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+        clearStickyComboSession(comboName, sessionId);
+      }
       lastError = error.message || String(error);
       if (!lastStatus) lastStatus = 500;
       log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
     }
+  }
+
+  // At least one member rejected the request itself. Hand back that member's own
+  // response — status and body — rather than the synthesized envelope below: the
+  // synthesized one reaches the client as a 200 carrying an error object, which
+  // reads as an empty success, and it buries the member that named the real cause.
+  // This is also what the caller saw before combos advanced on these errors.
+  if (requestScopedResult) {
+    log.warn("COMBO", `No model served the request; returning the first request-scoped failure (${requestScopedResult.status})`);
+    return requestScopedResult;
   }
 
   // All models failed
@@ -1142,3 +1435,10 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   log.info("FUSION", `Judging ${answers.length} answers with ${judge}`);
   return handleSingleModel(judgeBody, judge);
 }
+
+export {
+  getStickyComboModel,
+  setStickyComboModel,
+  clearStickyComboSession,
+  orderModelsByChoice,
+} from "./systemoneRouter.js";

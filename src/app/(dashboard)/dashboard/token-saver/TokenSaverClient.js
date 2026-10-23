@@ -48,6 +48,8 @@ export default function TokenSaverClient() {
   const [cavemanLevel, setCavemanLevel] = useState("full");
   const [ponytailEnabled, setPonytailEnabled] = useState(false);
   const [ponytailLevel, setPonytailLevel] = useState("full");
+  const [customPromptEnabled, setCustomPromptEnabled] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState("");
   const [pxpipeEnabled, setPxpipeEnabled] = useState(false);
   const [pxpipeMinChars, setPxpipeMinChars] = useState(25000);
   const [pxpipeStatus, setPxpipeStatus] = useState({
@@ -357,6 +359,15 @@ export default function TokenSaverClient() {
     patchSetting({ ponytailLevel: level });
   };
 
+  const handleCustomPromptEnabled = (value) => {
+    setCustomPromptEnabled(value);
+    patchSetting({ customPromptEnabled: value });
+  };
+
+  const handleCustomPromptBlur = () => {
+    patchSetting({ customPrompt });
+  };
+
   const refreshPxpipeStatus = useCallback(async () => {
     setPxpipeStatus((s) => ({ ...s, loading: true }));
     try {
@@ -433,6 +444,8 @@ export default function TokenSaverClient() {
           setCavemanLevel(data.cavemanLevel || "full");
           setPonytailEnabled(!!data.ponytailEnabled);
           setPonytailLevel(data.ponytailLevel || "full");
+          setCustomPromptEnabled(!!data.customPromptEnabled);
+          setCustomPrompt(data.customPrompt || "");
           setPxpipeEnabled(!!data.pxpipeEnabled);
           if (typeof data.pxpipeMinChars === "number") setPxpipeMinChars(data.pxpipeMinChars);
           refreshHeadroomStatus();
@@ -793,6 +806,37 @@ export default function TokenSaverClient() {
             />
           </div>
         </div>
+        <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">Custom system prompt</p>
+            <p className="text-sm text-text-muted">
+              Appends your own instruction to every request, independently of
+              the savers above
+            </p>
+          </div>
+          <Toggle
+            checked={customPromptEnabled}
+            onChange={() => handleCustomPromptEnabled(!customPromptEnabled)}
+          />
+        </div>
+        {customPromptEnabled && (
+          <div className="pt-3">
+            <textarea
+              id="custom-prompt"
+              aria-label="Custom system prompt"
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              onBlur={handleCustomPromptBlur}
+              rows={4}
+              placeholder="e.g. Prefer editing existing files over creating new ones."
+              className="w-full rounded border border-border bg-transparent p-2 text-xs"
+            />
+            <p className="text-xs text-text-muted mt-1">
+              Applied to every provider and model. Sent as-is to upstream; an
+              empty prompt injects nothing.
+            </p>
+          </div>
+        )}
         <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-3 flex-wrap">

@@ -1,28 +1,126 @@
-import { describe, expect, it } from "vitest";
-import { normalizeClaudePassthrough } from "../../open-sse/translator/formats/claude.js";
+// A replayed assistant turn can carry a thinking block whose text is empty or
+// whitespace-only while its signature is still valid — e.g. a thought that was
+// stripped upstream, or a provider that streamed whitespace as reasoning. Both
+// request paths that forward Claude history kept such blocks, and Anthropic
+// rejects the whole request:
+//   400 messages.N.content.0.thinking: each thinking block must contain non-whitespace thinking
+//   - normalizeClaudePassthrough (native Claude passthrough clients) — signature check alone
+//   - prepareClaudeRequest (translated clients; the deepSeekServed and
+//     anthropic-compatible branches keep thinking unconditionally)
+// Empty *text* blocks are already dropped for the same class of upstream 400;
+// thinking blocks need the same treatment on both paths.
+//
+// The signature must be a REAL E-form one: an invalid signature is dropped earlier
+// by the signature check, which would mask the text check under test.
+import { describe, it, expect } from "vitest";
+import { normalizeClaudePassthrough, prepareClaudeRequest } from "../../open-sse/translator/formats/claude.js";
 import { CLAUDE_BLOCK } from "../../open-sse/translator/schema/index.js";
-const SIG = "Em9wYXF1ZS1wYXlsb2Fk"; // valid E-form: Buffer.from(SIG,"base64")[0] === 0x12
-const b = blocks => ({ messages: [{ role: "assistant", content: blocks }] });
+import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../open-sse/config/defaultThinkingSignature.js";
 
-describe("Claude thinking blocks filtering & opaque preservation", () => {
-  it("drops blank THINKING block and preserves valid REDACTED_THINKING", () => {
-    // SIG là E-form hợp lệ (base64 giải mã[0] === 0x12). Drop phải do thinking rỗng,
-    // không phải do signature sai — nếu không case này pass ngay và không RED.
-    const body1 = b([{ type: CLAUDE_BLOCK.THINKING, thinking: "   ", signature: SIG }, { type: CLAUDE_BLOCK.TEXT, text: "Ans" }]);
-    normalizeClaudePassthrough(body1, "claude-sonnet-4-6");
-    expect(body1.messages[0].content).toHaveLength(1);
-    expect(body1.messages[0].content[0].type).toBe(CLAUDE_BLOCK.TEXT);
+const assistant = (blocks) => ({ role: "assistant", content: blocks });
+const thinking = (text) => ({ type: "thinking", thinking: text, signature: DEFAULT_THINKING_CLAUDE_SIGNATURE });
 
-    // REDACTED_THINKING là opaque data: không có trường thinking nên không rơi vào carve-out.
-    const opaque = { type: CLAUDE_BLOCK.REDACTED_THINKING, data: "YWJj", signature: SIG };
-    const body2 = b([opaque, { type: CLAUDE_BLOCK.TEXT, text: "Ans" }]);
-    normalizeClaudePassthrough(body2, "claude-sonnet-4-6");
-    expect(body2.messages[0].content).toHaveLength(2);
-    expect(body2.messages[0].content[0]).toEqual(opaque);
+const claudeRequest = (messages) => ({
+  model: "deepseek-v4.1-flash",
+  max_tokens: 1024,
+  messages,
+});
 
-    // Control: THINKING có nội dung thật + signature hợp lệ vẫn giữ nguyên.
-    const body3 = b([{ type: CLAUDE_BLOCK.THINKING, thinking: "real reasoning", signature: SIG }, { type: CLAUDE_BLOCK.TEXT, text: "Ans" }]);
-    normalizeClaudePassthrough(body3, "claude-sonnet-4-6");
-    expect(body3.messages[0].content).toHaveLength(2);
+describe("normalizeClaudePassthrough — blank thinking blocks", () => {
+  it("drops an empty thinking block and keeps its sibling text block", () => {
+    const out = normalizeClaudePassthrough({
+      messages: [
+        { role: "user", content: "hi" },
+        assistant([thinking(""), { type: "text", text: "kept" }]),
+      ],
+    });
+
+    expect(out.messages[1].content).toEqual([{ type: "text", text: "kept" }]);
+  });
+
+  it("drops a whitespace-only thinking block", () => {
+    const out = normalizeClaudePassthrough({
+      messages: [
+        { role: "user", content: "hi" },
+        assistant([thinking("  \n\t "), { type: "text", text: "kept" }]),
+      ],
+    });
+
+    expect(out.messages[1].content).toEqual([{ type: "text", text: "kept" }]);
+  });
+
+  it("drops the whole message when the blank thinking block was its only content", () => {
+    const out = normalizeClaudePassthrough({
+      messages: [
+        { role: "user", content: "hi" },
+        assistant([thinking("   ")]),
+      ],
+    });
+
+    expect(out.messages.some(m => m.role === "assistant")).toBe(false);
+  });
+
+  it("keeps a thinking block that has visible text", () => {
+    const block = thinking("considered it");
+    const out = normalizeClaudePassthrough({
+      messages: [{ role: "user", content: "hi" }, assistant([block, { type: "text", text: "kept" }])],
+    });
+
+    expect(out.messages[1].content).toEqual([block, { type: "text", text: "kept" }]);
+  });
+
+  it("preserves REDACTED_THINKING, which is opaque data with no thinking text", () => {
+    // REDACTED_THINKING carries no `thinking` field, so the blank-text carve-out
+    // must not reach it: the block is opaque ciphertext and has to survive intact.
+    const opaque = { type: CLAUDE_BLOCK.REDACTED_THINKING, data: "YWJj", signature: DEFAULT_THINKING_CLAUDE_SIGNATURE };
+    const out = normalizeClaudePassthrough({
+      messages: [
+        { role: "user", content: "hi" },
+        assistant([opaque, { type: "text", text: "Ans" }]),
+      ],
+    });
+
+    expect(out.messages[1].content).toEqual([opaque, { type: "text", text: "Ans" }]);
+  });
+});
+
+// The translated path (CC → non-native provider over the Claude transport):
+// prepareClaudeRequest's deepSeekServed branch keeps thinking unconditionally, so
+// a blank block rode through to the upstream and 400'd the request.
+describe("prepareClaudeRequest — blank thinking blocks (deepSeekServed via opencode-go)", () => {
+  // prepareClaudeRequest also stamps cache_control on the last non-thinking block
+  // of the final assistant, so assert on block kinds + thinking text, not deep equality.
+  it("drops a blank thinking block but keeps its sibling text block", () => {
+    const out = prepareClaudeRequest(claudeRequest([
+      { role: "user", content: "hi" },
+      assistant([thinking("   "), { type: "text", text: "kept" }]),
+    ]), "opencode-go");
+
+    const asst = out.messages.find(m => m.role === "assistant");
+    expect(asst.content.map(b => b.type)).toEqual(["text"]);
+    expect(asst.content[0].text).toBe("kept");
+  });
+
+  it("keeps a signed thinking block that has visible text (deepSeekServed keeps thinking)", () => {
+    const block = thinking("considered it");
+    const out = prepareClaudeRequest(claudeRequest([
+      { role: "user", content: "hi" },
+      assistant([block, { type: "text", text: "kept" }]),
+    ]), "opencode-go");
+
+    const asst = out.messages.find(m => m.role === "assistant");
+    expect(asst.content.some(b => b.type === "thinking" && b.thinking === "considered it")).toBe(true);
+    expect(asst.content.some(b => b.type === "text")).toBe(true);
+  });
+
+  it("drops a blank thinking block on the plain deepseek provider too", () => {
+    const out = prepareClaudeRequest(claudeRequest([
+      { role: "user", content: "hi" },
+      assistant([thinking(""), { type: "text", text: "kept" }]),
+    ]), "deepseek");
+
+    const asst = out.messages.find(m => m.role === "assistant");
+    expect(asst.content.map(b => b.type)).toEqual(["text"]);
+    expect(asst.content[0].text).toBe("kept");
   });
 });

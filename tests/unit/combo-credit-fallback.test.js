@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { handleComboChat } from "../../open-sse/services/combo.js";
 
 describe("combo credit error fallback", () => {
+  // A 400 that matches no rule is request-scoped (context overflow, malformed
+  // body, unsupported parameter): the credential is healthy, so combo rotation
+  // advances to the next member instead of returning the error. Credit wording
+  // still matches its text rule and advances with a cooldown. Only permanent
+  // errors stop the rotation (see the unknown-model case below).
   it.each([
     ["You have insufficient credits to make this request.", true],
-    ["Bad request", false],
-  ])("keeps fallback scoped to credits: %s", async (message, continueRouting) => {
+    ["Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.", true],
+    ["Bad request", true],
+  ])("advances past a 400 response: %s", async (message, continueRouting) => {
     const body = { messages: [{ role: "user", content: "Hello" }] };
     const models = ["cmc/deepseek/deepseek-v4-pro", "mistral/mistral-medium-latest"];
     const failure = Response.json({ error: { message } }, { status: 400 });

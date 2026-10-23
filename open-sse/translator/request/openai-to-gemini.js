@@ -20,6 +20,7 @@ import {
 } from "../formats/gemini.js";
 import { deriveSessionId, toNumericSessionId } from "../../utils/sessionManager.js";
 import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
+import { isGemini4Model } from "../../providers/capabilities.js";
 
 // Sanitize function names for Gemini API.
 // Gemini requires: starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 chars.
@@ -115,14 +116,15 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     safetySettings: DEFAULT_SAFETY_SETTINGS
   };
 
-  // Generation config
-  if (body.temperature !== undefined) {
+  // Generation config — Gemini 4 removed the sampling params, forwarding them fails the request
+  const allowSampling = !isGemini4Model(model);
+  if (allowSampling && body.temperature !== undefined) {
     result.generationConfig.temperature = body.temperature;
   }
-  if (body.top_p !== undefined) {
+  if (allowSampling && body.top_p !== undefined) {
     result.generationConfig.topP = body.top_p;
   }
-  if (body.top_k !== undefined) {
+  if (allowSampling && body.top_k !== undefined) {
     result.generationConfig.topK = body.top_k;
   }
   if (body.max_tokens !== undefined) {
@@ -143,7 +145,14 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     }
   }
 
-  // Build tool responses cache
+  // Build tool responses cache.
+  //
+  // Queued per id rather than a single value: an OpenAI tool_call_id is only
+  // unique within its own assistant turn, so a long agent session can reuse one
+  // id for two different tool results. A plain id->content map keeps only the
+  // LAST one, and the earlier turn would then be answered with the later
+  // turn's output. Each functionCall consumes the oldest unconsumed result for
+  // its id instead. #4273
   const toolResponses = Object.create(null);
   if (body.messages && Array.isArray(body.messages)) {
     for (const msg of body.messages) {
@@ -252,6 +261,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
           if (hasActualResponses || isIntermediate) {
             const toolParts = [];
             for (const { origId, emitId, name: callName } of toolCallIds) {
+              // Content resolves on the ORIGINAL id, consuming the oldest
+              // unconsumed result; only the emitted id is uniquified. #4273 #4532
               const queue = toolResponses[origId];
               const cursor = toolResponseCursor[origId] || 0;
               let respData;
@@ -259,8 +270,10 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
                 respData = queue[cursor];
                 toolResponseCursor[origId] = cursor + 1;
               }
-              let resp = respData?.content !== undefined ? respData.content : "";
+              const resp = respData?.content !== undefined ? respData.content : "";
 
+              // Name comes from THIS call, not from the conversation-wide id->name map,
+              // which a later duplicate of the same id would have overwritten.
               let name = callName || tcID2Name[origId];
               if (!name) {
                 const idParts = String(origId).split("-");
@@ -285,6 +298,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
 
               toolParts.push({
                 functionResponse: {
+                  // Matches the functionCall id emitted above, so a response
+                  // never points at an id the call does not carry. #4532
                   id: emitId,
                   name: sanitizeGeminiFunctionName(name),
                   response: responseObj
@@ -337,7 +352,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     result.toolConfig = toolConfig;
   }
 
-  result.contents = normalizeGeminiContents(result.contents);
+  result.contents = normalizeGeminiContents(result.contents, model);
   return result;
 }
 
@@ -545,7 +560,7 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
     envelope.request.systemInstruction = { role: GEMINI_ROLE.USER, parts: systemParts };
   }
 
-  envelope.request.contents = normalizeGeminiContents(envelope.request.contents);
+  envelope.request.contents = normalizeGeminiContents(envelope.request.contents, model);
   return envelope;
 }
 

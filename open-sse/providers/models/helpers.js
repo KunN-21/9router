@@ -28,10 +28,30 @@ export function isMuseSparkModel(modelId) {
   return /^muse[-_]?spark(?:$|[-_:.\s])/i.test(base);
 }
 
-// Endpoint families for OpenCode models outside curated registry (modelsFetcher /
-// passthrough ids). Regex keeps auto-fetched models on right endpoint:
-// /responses (gpt/grok/muse-spark), /messages (minimax/qwen), /chat (rest).
-// Curated registry entries always win; unknown-id fallback only.
+// "model(level)" is a 9router thinking override; strip before matching.
+// Accepts both bare ids ("deepseek-v4-pro(max)") and provider-prefixed ones.
+export function isDeepSeekModel(modelId) {
+  if (!modelId || typeof modelId !== "string") return false;
+  const clean = modelId.replace(/\([^()]+\)\s*$/, "").trim();
+  const base = clean.includes("/") ? clean.split("/").pop() : clean;
+  return /^deepseek-/i.test(base);
+}
+
+// OpenCode Zen free-tier ids all carry the "-free" suffix (e.g.
+// "mimo-v2.6-flash-free", "muse-spark-1.3-contributor-free"). Upstream gates
+// these behind the attested free-tier identity even on the keyed lane, so the
+// executor must detect them to switch auth instead of hardcoding a model list.
+export function isOpencodeFreeTierModel(modelId) {
+  if (!modelId || typeof modelId !== "string") return false;
+  const clean = modelId.replace(/\([^()]+\)\s*$/, "").trim();
+  const base = clean.includes("/") ? clean.split("/").pop() : clean;
+  return /-free$/i.test(base);
+}
+
+// Endpoint families for OpenCode models outside the curated registry (modelsFetcher /
+// passthrough ids) — regex keeps auto-fetched models on the right endpoint:
+// /responses (gpt/grok/muse-spark), /messages (minimax/qwen), /chat/completions (rest).
+// Curated registry entries always win; this is the unknown-id fallback only.
 const OPENCODE_FAMILIES = [
   { match: /^(grok|gpt|muse[-_]?spark)/i, supportedFormats: [FORMATS.OPENAI_RESPONSES], targetFormat: FORMATS.OPENAI_RESPONSES },
   // OpenCode Zen .1 DeepSeek models are chat-only; wider transport support belongs to Go.

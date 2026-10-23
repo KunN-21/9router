@@ -38,7 +38,7 @@ describe("parseClaudeResetGrants (B6DG1 pure parser cases)", () => {
       ],
     });
     expect(r).toMatchObject({ availableCount: 3, nextGrantId: "g2", expiresAt: "2026-10-22T00:00:00Z" });
-    expect(r.grants.map((g) => g.id)).toEqual(["g1", "g2", "g3"]);
+    expect(r.grants.map((g) => g.id)).toEqual(["g1", "g2", "g3"]); // modal lists paused too
     expect(r.grants[1].clears).toEqual(["five_hour", "seven_day"]);
   });
 

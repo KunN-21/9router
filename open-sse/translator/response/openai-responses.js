@@ -89,7 +89,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   if (!chunk.choices?.length) {
     return state.completionPending && state.responsesUsage ? flushEvents(state) : [];
   }
-  
+
   const events = [];
   const nextSeq = () => ++state.seq;
   

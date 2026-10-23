@@ -35,9 +35,11 @@ describe("bug: Claude → OpenAI bridge data loss", () => {
     expect(json, "thinking content lost via OpenAI bridge").toContain("secret reasoning");
   });
 
-  // claude-to-openai.js — tool_result image blocks used to be stringified into
-  // raw JSON (giant base64 blobs tripped upstream validators). Now a short
-  // placeholder keeps surrounding text and never leaks the payload.
+  // claude-to-openai.js:155-173 — tool_result image block used to be stringified
+  // into raw JSON (giant base64 blobs tripped upstream validators), or dropped.
+  // Fixed in f4f06f29 ("keep tool-result images"): the OpenAI tool role is
+  // text-only, so the image is hoisted into the following user turn.
+
   it("tool_result with image block is not turned into raw JSON / dropped", () => {
     const out = T(FORMATS.CLAUDE, FORMATS.OPENAI, {
       messages: [
@@ -55,7 +57,10 @@ describe("bug: Claude → OpenAI bridge data loss", () => {
     // Should keep the image; currently stringifies the whole array into raw JSON
     expect(toolMsg?.content, "image in tool_result lost").not.toMatch(/^\[/);
     expect(toolMsg?.content, "raw payload leaked").not.toContain("ZZZ");
-    expect(toolMsg?.content, "placeholder present").toContain("Omitted image (image/png");
+    // The OpenAI tool role is text-only, so the image is hoisted into the next user turn.
+    const hoisted = out.messages.find((m) => m.role === "user" && JSON.stringify(m).includes("call_1"));
+    expect(hoisted, "image hoisted into a user turn").toBeTruthy();
+    expect(JSON.stringify(hoisted), "image payload preserved").toContain("data:image/png;base64,ZZZ");
   });
 
   // claude-to-openai.js:155-173 — is_error lost

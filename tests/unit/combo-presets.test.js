@@ -7,7 +7,7 @@ import {
   PRESET_SOURCES,
 } from "../../src/lib/comboPresets.js";
 
-describe("combo presets helper", () => {
+describe("combo presets", () => {
   it("rejects combo names with slashes or invalid chars", () => {
     expect(isValidComboPresetName("composer-2.5")).toBe(true);
     expect(isValidComboPresetName("claude-opus-5")).toBe(true);

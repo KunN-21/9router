@@ -42,11 +42,6 @@ function translatedSession(sessionId, clientTool) {
   return `ses_${digest}`;
 }
 
-// Strip thinking suffix "model(level)" so checks hit base id.
-function baseModelId(model) {
-  return String(model || "").replace(/\([^()]+\)\s*$/, "").trim();
-}
-
 // Responses-only per provider registry (grok-4.6, gpt-5.6-luna, muse-spark, …),
 // including family-regex fallback for passthrough ids. Never hardcode model ids.
 function isResponsesModel(model) {

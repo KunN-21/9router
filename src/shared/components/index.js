@@ -27,6 +27,7 @@ export { default as KiroAuthModal } from "./KiroAuthModal";
 export { default as KiroOAuthWrapper } from "./KiroOAuthWrapper";
 export { default as KiroSocialOAuthModal } from "./KiroSocialOAuthModal";
 export { default as CursorAuthModal } from "./CursorAuthModal";
+export { default as ZedAuthModal } from "./ZedAuthModal";
 export { default as XiaomiMimoAuthModal } from "./XiaomiMimoAuthModal";
 export { default as ZedAuthModal } from "./ZedAuthModal";
 export { default as IFlowCookieModal } from "./IFlowCookieModal";
@@ -38,6 +39,7 @@ export { default as SegmentedControl } from "./SegmentedControl";
 export { default as Tooltip } from "./Tooltip";
 export { default as ProviderInfoCard } from "./ProviderInfoCard";
 export { default as CapacityBadges } from "./CapacityBadges";
+export { default as SmartPolicyModal } from "./SmartPolicyModal";
 
 // Layouts
 export * from "./layouts";

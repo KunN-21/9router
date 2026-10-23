@@ -83,3 +83,4 @@ export function parseCodexProfileModel(content) {
   const match = content.match(/^\s*model\s*=\s*(["'])([^"\n]+)\1/m);
   return match ? match[2] : "";
 }
+

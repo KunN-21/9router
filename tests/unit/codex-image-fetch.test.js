@@ -10,8 +10,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// Mock DNS so the SSRF guard treats example.com as public. Runtime requests
-// `{ all: true }`, so preserve Node's array return shape for that option.
+// Mock DNS so the SSRF guard treats example.com as public.
+// image.js resolves with { all: true } (DNS pinning, c7d07448) and expects an array.
 vi.mock("node:dns/promises", () => ({
   lookup: async (_host, options) => options?.all
     ? [{ address: "93.184.216.34", family: 4 }]

@@ -35,8 +35,9 @@ export default async function proxy(request) {
     // so unrelated unknown routes don't spam this.
     console.log(`${new Date().toISOString().slice(11,23)} [mimo-login] no-session ${pathname} (cookie header: ${cookies ? cookies.slice(0, 80) : "<none>"})`);
   }
+  let sess = null;
   if (hasSessionCookie) {
-    const sess = sessionFromRequest(request);
+    sess = sessionFromRequest(request);
     if (sess) {
       const origin = originOf(request);
       try {

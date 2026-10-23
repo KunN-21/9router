@@ -329,6 +329,11 @@ describe("CustomConfigCard Module Presence & ProviderDetailPage Mount (TDD RED G
       "./AddCustomModelModal": makeDefault(() => null),
       "./BulkImportCodexModal": makeDefault(() => null),
       "./BulkImportGrokCliModal": makeDefault(() => null),
+      "./AutoPingScheduleModal": makeDefault(() => null),
+      "../components/WebLoginButton.js": Object.assign(makeDefault(() => null), {
+        WEB_LOGIN_PROVIDERS: new Set(),
+      }),
+      "@/shared/services/quotaPingSchedule": { getScheduleSlotLabels: () => [] },
     };
 
     const targetPath = resolveProjectPath("src/app/(dashboard)/dashboard/providers/[id]/page.js");

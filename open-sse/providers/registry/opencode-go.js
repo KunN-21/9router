@@ -31,7 +31,9 @@ const opencodeGo = {
   transports: [
     { format: "openai", baseUrl: "https://opencode.ai/zen/go/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
     { format: "claude", baseUrl: "https://opencode.ai/zen/go/v1/messages", auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true } },
-    // /responses rejects Chat-shaped thinking fields and expects reasoning:{effort,summary}.
+    // /responses rejects the Chat-shaped thinking fields (reasoning_effort, thinking:{type}) with
+    // 503 "Endpoint is unavailable" (probed live on deepseek-v4.1-flash); it accepts the nested
+    // reasoning:{effort,summary} for every model it serves (deepseek-v4*, gpt-*-luna, grok-4.*).
     { format: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" }, thinkingFormat: "openai-responses" },
   ],
   // supportedFormats follow endpoint table in https://opencode.ai/docs/go/
@@ -70,10 +72,10 @@ const opencodeGo = {
     { id: "hy4-preview", name: "Hy4 Preview", supportedFormats: ["openai"] },
     { id: "hy3", name: "Hy3", supportedFormats: ["openai"] },
     { id: "hy3-preview", name: "Hy3 Preview", supportedFormats: ["openai"] },
-    // Not in docs endpoint table but served by /zen/go/v1/models. Chat lane fallback.
+    // In /zen/go/v1/models but absent from the docs endpoint table — chat lane is the fallback guess
     { id: "omen-alpha", name: "Omen Alpha", supportedFormats: ["openai"] },
-    // Served by /zen/go/v1/responses only. Responses-only entry forces chatCore
-    // past sourceFormat-matched transports into translation (see chatCore guard).
+    // Served by /zen/go/v1/responses only — the responses-only entry forces chatCore
+    // past the sourceFormat-matched transports into translation (see chatCore guard).
     { id: "grok-4.7", name: "Grok 4.7", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.6", name: "Grok 4.6", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.5", name: "Grok 4.5", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -81,10 +83,13 @@ const opencodeGo = {
     { id: "gpt-6-luna", name: "GPT 6 Luna", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    // Served by /zen/go/v1/messages only: /chat/completions answers
+    // "ModelProtocolUnsupported". Declaring targetFormat lets clients on the OpenAI
+    // wire translate to Claude and land on the matched transport (chatCore guard).
     { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", targetFormat: "claude", supportedFormats: ["claude"] },
   ],
-  // Live catalogue. Ids outside curated list get endpoint lane from family regex
-  // in providers/models/helpers.js (opencodeFamilyFormats).
+  // Live catalogue; ids outside this curated list get their endpoint lane from the
+  // family regex in providers/models/helpers.js (opencodeFamilyFormats).
   modelsFetcher: { url: "https://opencode.ai/zen/go/v1/models", type: "opencode-go" },
   passthroughModels: true,
   features: {

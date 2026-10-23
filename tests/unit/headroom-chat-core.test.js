@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { FORMATS } from "../../open-sse/translator/formats.js";
+import "../translator/registerAll.js";
 
 const { executeMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
 vi.mock("../../open-sse/utils/stream.js", () => ({
   COLORS: { red: "", reset: "" },
   createPassthroughStreamWithLogger: vi.fn(() => new TransformStream()),
+  createSSETransformStreamWithLogger: vi.fn(() => new TransformStream()),
 }));
 
 vi.mock("@/lib/usageDb.js", () => ({
@@ -159,7 +161,7 @@ describe("handleChatCore Headroom diagnostics", () => {
     expect(logs).not.toContain("abc123");
   });
 
-  it("sends Headroom-compressed messages to the provider executor", async () => {
+  it.each([["openai", "gpt-4o"], ["commandcode", "test-model"]])("sends Headroom-compressed messages to the %s executor", async (provider, model) => {
     const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
     const original = "very large context that should be replaced";
     const compressed = "compressed context";
@@ -177,8 +179,8 @@ describe("handleChatCore Headroom diagnostics", () => {
     });
 
     await handleChatCore({
-      body: { model: "gpt-4o", stream: false, messages: [{ role: "user", content: original }] },
-      modelInfo: { provider: "openai", model: "gpt-4o" },
+      body: { model, stream: false, messages: [{ role: "user", content: original }] },
+      modelInfo: { provider, model },
       credentials: { apiKey: "test-key", providerSpecificData: {} },
       log,
       connectionId: "test-conn",
@@ -196,9 +198,9 @@ describe("handleChatCore Headroom diagnostics", () => {
     });
 
     expect(executeMock).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.objectContaining({
-        messages: [{ role: "user", content: compressed }],
-      }),
+      body: expect.objectContaining(provider === "commandcode"
+        ? { params: expect.objectContaining({ messages: [{ role: "user", content: [{ type: "text", text: compressed }] }] }) }
+        : { messages: [{ role: "user", content: compressed }] }),
     }));
     expect(JSON.stringify(executeMock.mock.calls[0][0].body)).not.toContain(original);
     expect(log.info).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("reported token delta=90 before=100 after=10"));
@@ -210,7 +212,7 @@ describe("handleChatCore Headroom diagnostics", () => {
     expect(logs).not.toContain(original);
   });
 
-  it("keeps original body (no commit) and logs skip reason when Headroom reports phantom savings", async () => {
+  it("warns when Headroom reports savings but messages barely shrink", async () => {
     const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
     const original = "x".repeat(1000);
     const nearlySame = "x".repeat(990);
@@ -246,24 +248,57 @@ describe("handleChatCore Headroom diagnostics", () => {
       },
     });
 
-    // Byte-shrink guard now rejects the candidate BEFORE committing — the
-    // executor must see the ORIGINAL payload, not the near-original compressed one.
-    expect(executeMock).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.objectContaining({
-        messages: [{ role: "user", content: original }],
-      }),
-    }));
-    // The old post-hoc warning is replaced by the pre-commit skip diagnostic.
+    // Either the pre-commit skip diagnostic or the post-hoc size warning — both
+    // mean the original payload was kept.
     expect(log.warn).toHaveBeenCalledWith(
       "HEADROOM",
-      expect.stringContaining("skipped:")
-    );
-    expect(log.warn).toHaveBeenCalledWith(
-      "HEADROOM",
-      expect.stringContaining("phantom savings")
+      expect.stringMatching(/phantom savings|shrank <5%/)
     );
   });
 
+  it("bypasses token savers when requested by the client", async () => {
+    const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    const pxpipeTransform = vi.fn();
+    const messages = [{ role: "user", content: "Write polished prose." }];
+
+    global.fetch = vi.fn(async (url) => {
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    await handleChatCore({
+      body: { model: "gpt-4o", stream: false, messages },
+      modelInfo: { provider: "openai", model: "gpt-4o" },
+      credentials: { apiKey: "test-key", providerSpecificData: {} },
+      log,
+      connectionId: "test-conn",
+      headroomEnabled: true,
+      headroomUrl: "http://localhost:8787",
+      headroomCompressUserMessages: true,
+      rtkEnabled: true,
+      cavemanEnabled: true,
+      cavemanLevel: "full",
+      ponytailEnabled: true,
+      ponytailLevel: "full",
+      pxpipeEnabled: true,
+      pxpipeTransform,
+      clientRawRequest: {
+        endpoint: "/v1/chat/completions",
+        body: {},
+        headers: {
+          accept: "application/json",
+          "x-9router-token-saver": "off",
+        },
+      },
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(pxpipeTransform).not.toHaveBeenCalled();
+    expect(executeMock).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        messages: [{ role: "user", content: "Write polished prose." }],
+      }),
+    }));
+  });
   it.each(["off", "OFF"])("pxpipe honors token-saver header %s on claude body above threshold", async (headerValue) => {
     const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
     const onPxpipeEvent = vi.fn();

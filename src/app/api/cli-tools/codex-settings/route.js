@@ -1,5 +1,3 @@
-export const dynamic = "force-dynamic";
-
 import { NextResponse } from "next/server";
 import { readExistingConfig } from "@/lib/cliTools/readExistingConfig";
 import { writeAtomic, assertSafePath } from "@/lib/cliTools/configFile";
@@ -9,6 +7,8 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
+
+export const dynamic = "force-dynamic";
 
 const execAsync = promisify(exec);
 
