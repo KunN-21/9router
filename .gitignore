@@ -101,3 +101,22 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+
+# Agent instructions for this machine, not for the repository
+/CLAUDE.md
+/AGENTS.md
+
+# AI agent harness config — local to each contributor, not part of the project
+/.claude/
+/.agents/
+/.gemini/
+/.cursor/
+/.codex/
+/.continue/
+/.aider*
+/.mcp.json
+/.clinerules
+/.windsurfrules
+/GEMINI.md
+/QWEN.md
+/COPILOT.md
