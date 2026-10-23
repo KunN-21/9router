@@ -61,7 +61,10 @@ describe("antigravity protocol contract", () => {
     storeGeminiThoughtSignature("call_a", "fixture-signature", null, "gemini-3.8-flash");
     const finalBody = finalAntigravityRequest(history());
     expect(finalBody.userAgent).toBe("antigravity");
-    expect(finalBody.requestType).toBe("agent");
+    // Upstream 5798b3084 (PR #4229, local 9f3303419): the agent (chat) path must
+    // NOT carry requestType — Google buckets it and answers a detail-free
+    // 429 RESOURCE_EXHAUSTED. Only image_gen / search keep a requestType.
+    expect(finalBody.requestType).toBeUndefined();
     const parts = finalBody.request.contents.flatMap((c) => c.parts || []);
     const calls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
     expect(calls.map((c) => c.id)).toEqual(["call_a", "call_b"]);

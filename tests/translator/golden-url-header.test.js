@@ -26,15 +26,27 @@ const SPECIALIZED = new Set([
 // Per-process / per-request values: kimi's random device name, minimax's session UUID.
 const VOLATILE_HEADERS = new Set(["x-msh-device-name", "x-mavis-session-id"]);
 
+// Host- and build-derived values: OS, Node version, package version, timezone.
+// Normalised so this golden locks the header SHAPE, not the machine that
+// generated the snapshot (a committed snapshot baked linux/v22.23.2/0.5.104
+// only matched on its build box: 5 providers drifted on every plain checkout,
+// which is why the snapshot was dropped once before).
+const ENV_HEADERS = new Set([
+  "x-platform", "x-platform-version", "x-client-version", "x-core-version",
+  "x-msh-version", "x-msh-device-model", "x-mavis-timezone-offset",
+]);
+
 // Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
     if (VOLATILE_HEADERS.has(k.toLowerCase())) { out[k] = "<VOLATILE>"; continue; }
+    if (ENV_HEADERS.has(k.toLowerCase())) { out[k] = "<ENV>"; continue; }
     out[k] = typeof v === "string"
       ? v.replace(/Bearer .+/, "Bearer <TOK>")
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
           .replace(/kimi-\d{10,}/g, "kimi-<TS>")
+          .replace(/9Router\/[0-9A-Za-z.-]+/g, "9Router/<VERSION>")
       : v;
   }
   return out;

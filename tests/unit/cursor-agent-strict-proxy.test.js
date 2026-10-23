@@ -35,14 +35,36 @@ import { CursorExecutor } from "../../open-sse/executors/cursor.js";
 import { getExecutor } from "../../open-sse/executors/index.js";
 import { getProviderCredentials } from "../../src/sse/services/auth.js";
 import { handleChatCore } from "../../open-sse/handlers/chatCore.js";
+import { encodeField, wrapConnectRPCFrame } from "../../open-sse/utils/cursorProtobuf.js";
 
-const STUB = () => ({
-  responseHeaders: Promise.resolve({ ":status": 200 }),
-  write: vi.fn(),
-  end: vi.fn(),
-  close: vi.fn(),
-  read: vi.fn().mockResolvedValue({ value: undefined, done: true }),
-});
+const LEN = 2;
+
+// Một turn tối thiểu có nội dung: text delta rồi turn_ended. Upstream 1d4335d44
+// coi một turn rỗng là lỗi (400 "empty turn"), nên stub phải trả lời được —
+// các case ở đây kiểm tra đường kết nối trực tiếp, không kiểm tra turn rỗng.
+function textFrame(text) {
+  const textPart = Buffer.from(encodeField(1, LEN, text));
+  const update = Buffer.from(encodeField(1, LEN, textPart));
+  return Buffer.from(wrapConnectRPCFrame(encodeField(1, LEN, update)));
+}
+
+function turnEndedFrame() {
+  const update = Buffer.from(encodeField(14, LEN, new Uint8Array()));
+  return Buffer.from(wrapConnectRPCFrame(encodeField(1, LEN, update)));
+}
+
+const STUB = () => {
+  const frames = [textFrame("ok"), turnEndedFrame()];
+  return {
+    responseHeaders: Promise.resolve({ ":status": 200 }),
+    write: vi.fn(),
+    end: vi.fn(),
+    close: vi.fn(),
+    read: vi.fn().mockImplementation(async () =>
+      frames.length ? { value: frames.shift(), done: false } : { value: undefined, done: true },
+    ),
+  };
+};
 const BODY = { messages: [{ role: "user", content: "hi" }] };
 
 describe("Cursor AgentService strict proxy fail-closed", () => {

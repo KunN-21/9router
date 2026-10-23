@@ -23,7 +23,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  try { if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* windows keeps the sqlite file open */ }
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
 });
@@ -177,7 +177,12 @@ describe("DB Concurrency — atomic safety", () => {
     expect(g.completionTokens).toBe(N * 50);
   });
 
-  it("records an identical write saved twice in parallel only once", async () => {
+  // Upstream v0.5.109 asserted 1 here, encoding the row-dropping write path it
+  // still shipped. This fork adopted the upstream fix for that bug (upstream
+  // 36aa66a83, "stop dropping requests that share a millisecond"; local
+  // b97324c012) and pins it in unit/usage-row-dedupe.test.js: a collision on the
+  // value tuple is ordinary under parallel load, so both rows are retained.
+  it("records an identical write saved twice in parallel as two rows", async () => {
     const entry = () => ({
       timestamp: tsFor(3000), provider: "mistral", model: "dup-model", connectionId: "cD",
       tokens: { prompt_tokens: 7, completion_tokens: 3 }, status: "ok",
@@ -185,6 +190,7 @@ describe("DB Concurrency — atomic safety", () => {
     await Promise.all([db.saveRequestUsage(entry()), db.saveRequestUsage(entry())]);
 
     const stats = await db.getUsageStats("24h");
-    expect(stats.byProvider.mistral.requests).toBe(1);
+    expect(stats.byProvider.mistral.requests).toBe(2);
+    expect((await db.getUsageHistory({ provider: "mistral" })).length).toBe(2);
   });
 });

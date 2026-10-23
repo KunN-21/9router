@@ -513,6 +513,13 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
     const utilsMock = makeUtilsMock(reconcileSpy ? { reconcileConnectionsPage: reconcileSpy } : {});
 
     const mocks = {
+      "next/navigation": {
+        useSearchParams: () => new URLSearchParams(),
+        useRouter: () => ({ push: () => {}, replace: () => {} }),
+        usePathname: () => "/dashboard/usage",
+      },
+      "@/app/(dashboard)/dashboard/providers/[id]/AutoPingScheduleModal": () => null,
+      "@/shared/services/quotaPingSchedule": { getScheduleSlotLabels: () => [] },
       "@/shared/components": {
         Card: ({ children, className, ...props }) =>
           React.createElement("div", { "data-card": true, className, ...props }, children),
@@ -566,11 +573,11 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
 
     const harness = createHookHarness(ProviderLimits, {
       0: initialConnections,
-      13: typeof initialUpdatingFastModeId === "string"
+      14: typeof initialUpdatingFastModeId === "string"
         ? { [initialUpdatingFastModeId]: true }
         : (initialUpdatingFastModeId || {}),
-      17: showEditModal,
-      18: selectedConnection,
+      18: showEditModal,
+      19: selectedConnection,
     });
 
     return {
@@ -668,7 +675,7 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
         body: JSON.stringify({ codexFastMode: true }),
       });
       expect(reconcileSpy).not.toHaveBeenCalled();
-      expect(harness.getHookState(13)).toEqual({});
+      expect(harness.getHookState(14)).toEqual({});
     } finally {
       global.fetch = originalFetch;
     }
@@ -709,7 +716,7 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
       expect(reconcileSpy).not.toHaveBeenCalled();
       const errors = harness.getHookState(3);
       expect(errors?.conn_quota_codex_err).toBe("Quota backend unreachable");
-      expect(harness.getHookState(13)).toEqual({});
+      expect(harness.getHookState(14)).toEqual({});
     } finally {
       global.fetch = originalFetch;
       console.error = originalConsoleError;
@@ -858,7 +865,7 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
       const clickPromiseB = buttons[1].props.onClick();
 
       // Check both are in-flight in hook 13
-      const updatingMap = harness.getHookState(13);
+      const updatingMap = harness.getHookState(14);
       expect(updatingMap?.["conn_quota_A"]).toBe(true);
       expect(updatingMap?.["conn_quota_B"]).toBe(true);
 
@@ -878,7 +885,7 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
       await clickPromiseA;
 
       // When scalar updatingFastModeId was used, completing A wiped out B's busy state
-      const updatingMapAfterA = harness.getHookState(13);
+      const updatingMapAfterA = harness.getHookState(14);
       expect(updatingMapAfterA?.["conn_quota_B"]).toBe(true);
       expect(updatingMapAfterA?.["conn_quota_A"]).toBeUndefined();
 
@@ -897,7 +904,7 @@ describe("ProviderLimits Quota Card Controls & Badges (Ruling D)", () => {
       });
       await clickPromiseB;
 
-      const finalMap = harness.getHookState(13);
+      const finalMap = harness.getHookState(14);
       expect(finalMap?.["conn_quota_B"]).toBeUndefined();
     } finally {
       global.fetch = originalFetch;
@@ -1070,6 +1077,12 @@ describe("ProviderDetailPage (page.js) Wire Contracts & Error Handling (Ruling D
           getState: () => ({ error: notificationStoreErrorSpy, success: vi.fn() }),
         }),
       },
+      "../components/WebLoginButton.js": Object.assign(makeDefault(() => null), {
+        WEB_LOGIN_PROVIDERS: new Set(),
+      }),
+      "@/shared/services/quotaPingSchedule": { getScheduleSlotLabels: () => [] },
+      "./AutoPingScheduleModal": makeDefault(() => null),
+      "./CustomConfigCard": makeDefault(() => null),
       "./ConnectionRow": makeDefault((props) => {
         capturedRowProps.push(props);
         if (props.connection?.id) {

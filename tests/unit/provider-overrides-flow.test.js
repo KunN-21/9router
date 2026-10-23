@@ -505,31 +505,29 @@ describe("Provider Overrides Flow & Transport Verification", () => {
 
     it("GrokWebExecutor applies providerOverrides to chat API fetch headers", async () => {
       const { GrokWebExecutor } = await import("../../open-sse/executors/grok-web.js");
+      const grokTlsModule = await import("../../open-sse/services/grokTlsClient.js");
       const executor = new GrokWebExecutor();
 
+      // grok.com sits behind Cloudflare and rejects Node's TLS fingerprint, so the
+      // executor goes through grokTlsFetch (wreq-js) instead of globalThis.fetch.
       let fetchOpts = null;
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = vi.fn(async (_url, opts) => {
+      vi.spyOn(grokTlsModule, "grokTlsFetch").mockImplementation(async (_url, opts) => {
         fetchOpts = opts;
         return new Response("data: {}\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
       });
 
-      try {
-        await executor.execute({
-          model: "grok-web/grok-2",
-          body: { messages: [{ role: "user", content: "hi" }] },
-          stream: false,
-          credentials: { apiKey: "sso=custom-sso-cookie" },
-          providerOverrides: {
-            headers: { "X-Grok-Header": "grok-test" },
-          },
-        });
+      await executor.execute({
+        model: "grok-web/grok-2",
+        body: { messages: [{ role: "user", content: "hi" }] },
+        stream: false,
+        credentials: { apiKey: "sso=custom-sso-cookie" },
+        providerOverrides: {
+          headers: { "X-Grok-Header": "grok-test" },
+        },
+      });
 
-        expect(fetchOpts).not.toBeNull();
-        expect(fetchOpts.headers["X-Grok-Header"]).toBe("grok-test");
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+      expect(fetchOpts).not.toBeNull();
+      expect(fetchOpts.headers["X-Grok-Header"]).toBe("grok-test");
     });
 
     it("ZedExecutor applies providerOverrides in fetchOptions headers and returns effective headers", async () => {

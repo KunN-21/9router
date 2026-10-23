@@ -31,13 +31,15 @@ describe("OpenCode Free Ox Alpha Free (oc/x-preview-f-free)", () => {
 
   it("OpenCodeExecutor.buildUrl routes Ox Alpha Free to Zen Chat Completions", () => {
     const url = new OpenCodeExecutor().buildUrl(OX_ID);
-    expect(url).toBe("https://opencode.ai/zen/v1/chat/completions");
+    // Free tier moved /zen/v1 → /inference/v1 with the v2 client fingerprint
+    // (upstream #4842); /zen/v1 now answers every free request with 403.
+    expect(url).toBe("https://opencode.ai/inference/v1/chat/completions");
   });
 
   it("Claude-source request still targets openai (no extra transport needed on base)", () => {
     expect(getModelTargetFormat("oc", OX_ID)).toBe("openai");
     expect(getModelSupportedFormats("oc", OX_ID)).toEqual(["openai"]);
-    expect(new OpenCodeExecutor().buildUrl(OX_ID)).toBe("https://opencode.ai/zen/v1/chat/completions");
+    expect(new OpenCodeExecutor().buildUrl(OX_ID)).toBe("https://opencode.ai/inference/v1/chat/completions");
   });
 
   it("resolves image input + reasoning capability deltas from models.dev metadata", () => {

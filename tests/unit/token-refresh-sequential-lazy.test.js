@@ -23,7 +23,11 @@ vi.mock("open-sse/services/projectId.js", () => ({
   invalidateProjectId: mockInvalidate,
   removeConnection: vi.fn(),
 }));
-vi.mock("../../src/lib/localDb.js", () => ({ updateProviderConnection: mockUpdateConn }));
+vi.mock("../../src/lib/localDb.js", () => ({
+  updateProviderConnection: mockUpdateConn,
+  // Reads the latest row before refreshing (upstream 0bc7f86e4): null = nothing newer to adopt.
+  getProviderConnectionById: vi.fn(async () => null),
+}));
 vi.mock("open-sse/services/oauthCredentialManager.js", async (importOriginal) => {
   const mod = await importOriginal();
   return {

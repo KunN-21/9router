@@ -2,7 +2,7 @@
 // re-enable only with a round-trip no-loss proof (tool ids, is_error, cache_control).
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_BLOCK, COMMANDCODE_BLOCK, RESPONSES_ITEM } from "../translator/schema/index.js";
-import { HEADROOM_TOOL_OUTPUT_MAX_DEPTH } from "./constants.js";
+import { HEADROOM_TOOL_OUTPUT_MAX_DEPTH, MIN_COMPRESS_SIZE } from "./constants.js";
 import {
   openaiResponsesToOpenAIRequest,
   openaiToOpenAIResponsesRequest,
@@ -421,6 +421,9 @@ function collectToolOutputText(body, format) {
     const value = object?.[key];
     if (typeof value === "string") {
       if (!value.trim()) return;
+      // ponytail: same floor as compressText — a blob too small to compress is
+      // not worth a proxy round-trip; raise if headroom gains a cheaper mode.
+      if (Buffer.byteLength(value, "utf8") < MIN_COMPRESS_SIZE) return;
       try { JSON.parse(value); return; } catch { /* plain text */ }
       messages.push({ role: ROLE.TOOL, tool_call_id: `headroom-tool-${messages.length}`, content: value });
       targets.push({ object, key, text: value });
@@ -441,6 +444,13 @@ function collectToolOutputText(body, format) {
   } else if ([FORMATS.GEMINI, FORMATS.GEMINI_CLI, FORMATS.ANTIGRAVITY, FORMATS.VERTEX].includes(format)) {
     const contents = body.request?.contents || body.contents;
     if (!Array.isArray(contents)) return null;
+    // A plain-string functionResponse.result belongs to the Gemini full
+    // projection below, which keeps systemInstruction + text + tool in one
+    // ordered sequence. Defer there instead of projecting a tool-only subset.
+    const hasPlainResult = contents.some((content) =>
+      Array.isArray(content?.parts)
+      && content.parts.some((part) => typeof part?.functionResponse?.response?.result === "string"));
+    if (hasPlainResult) return null;
     for (const content of contents) {
       if (!Array.isArray(content?.parts)) continue;
       for (const part of content.parts) {
@@ -834,6 +844,14 @@ export async function compressWithHeadroom(body, { enabled, url, model, format, 
       if (!data || !applyToolOutputText(toolOutputs, data.messages, diagnostics)) return null;
       if (diagnostics) diagnostics.after = captureSizeSnapshot(body);
       return data;
+    }
+
+    // Responses contract guard, ahead of the generic protected/unknown guard: an
+    // unsafe body.input (tool/reasoning items) can only be compressed through the
+    // in-place leaf path above, so name that reason instead of the generic one.
+    if (format === FORMATS.OPENAI_RESPONSES && hasUnsafeResponsesInputForCompression(body)) {
+      setDiagnostic(diagnostics, "skipped: openai-responses tool/reasoning input is not safe to compress");
+      return null;
     }
 
     if (hasProtectedOrUnknownToolBlock(body, format)) {

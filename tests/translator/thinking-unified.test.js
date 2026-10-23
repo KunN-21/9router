@@ -302,16 +302,30 @@ describe("OpenCode Free ids with no capabilities entry (#2690)", () => {
     reasoning_effort: effort,
   });
 
+  // This fork writes every openai-responses wire in the nested
+  // reasoning:{effort,summary} shape (local #4610, commit 6aa6fee92), and the
+  // per-transport thinkingFormat declaration (upstream d07e5bc3f) only refines a
+  // targetFormat that already nests. So the assertion follows the intent of the
+  // upstream case — the client's effort must survive the capability lookup — in
+  // the wire shape the merged tree emits; "none" is expressed by omitting reasoning.
   it("keeps the client reasoning_effort for space-bunny-free", () => {
     for (const level of ["low", "medium", "high", "xhigh", "none"]) {
       expect(apply("openai", "oc/space-bunny-free", bunny(level), "oc").reasoning_effort).toBe(level);
-      expect(apply("openai-responses", "oc/space-bunny-free", bunny(level), "oc").reasoning_effort).toBe(level);
     }
+    for (const level of ["low", "medium", "high", "xhigh"]) {
+      const out = apply("openai-responses", "oc/space-bunny-free", bunny(level), "oc");
+      expect(out.reasoning).toEqual({ effort: level, summary: "auto" });
+      expect(out.reasoning_effort).toBeUndefined();
+    }
+    const off = apply("openai-responses", "oc/space-bunny-free", bunny("none"), "oc");
+    expect(off.reasoning).toBeUndefined();
+    expect(off.reasoning_effort).toBeUndefined();
+    expect(off.thinking).toBeUndefined();
   });
 
   it("clamps max to xhigh (openai format has no max)", () => {
     expect(apply("openai", "oc/space-bunny-free", bunny("max"), "oc").reasoning_effort).toBe("xhigh");
-    expect(apply("openai-responses", "oc/space-bunny-free", bunny("max"), "oc").reasoning_effort).toBe("xhigh");
+    expect(apply("openai-responses", "oc/space-bunny-free", bunny("max"), "oc").reasoning).toEqual({ effort: "xhigh", summary: "auto" });
   });
 
   it("still strips it for a model that has no entry at all (control)", () => {
@@ -354,8 +368,12 @@ describe("transport-declared thinkingFormat (Responses endpoints)", () => {
     expect(out.reasoning_effort).toBeUndefined();
   });
 
+  // Same fork rule as above: an undeclared Responses target still nests. The
+  // control keeps its meaning — a provider with no transport declaration is not
+  // switched to the Chat shape — while asserting the shape this tree emits.
   it("a provider without the declaration keeps its existing Responses behaviour (control)", () => {
     const out = apply("openai-responses", "oc/space-bunny-free", chatBody("high"), "oc");
-    expect(out.reasoning_effort).toBe("high");
+    expect(out.reasoning).toEqual({ effort: "high", summary: "auto" });
+    expect(out.reasoning_effort).toBeUndefined();
   });
 });

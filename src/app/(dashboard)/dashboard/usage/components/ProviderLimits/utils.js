@@ -508,9 +508,11 @@ export function parseQuotaData(provider, data) {
               // Qoder reports open-ended plans as a 9999 sentinel; the service
               // turns that into neverExpires so the row can read
               // "Never expires" instead of "N/A" or a year-9999 date.
-              neverExpires: quota.neverExpires === true,
+              // Only emitted when true: QuotaTable tests these for truthiness,
+              // so an absent key and a `false` render identically.
+              ...(quota.neverExpires === true ? { neverExpires: true } : {}),
               // Present on add-on credits: links to Qoder's own usage page.
-              detailUrl: quota.detailUrl || null,
+              ...(quota.detailUrl ? { detailUrl: quota.detailUrl } : {}),
             });
           });
         }

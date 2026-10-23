@@ -95,7 +95,7 @@ describe("Chat account pinning header passthrough", () => {
     const res = await handleChat(req({ "x-connection-id": "  conn-pinned  " }));
     expect(res.status).toBe(200);
     expect(mocks.getProviderCredentials).toHaveBeenCalledWith(
-      "anthropic", expect.any(Set), "claude-3-7-sonnet", { preferredConnectionId: "conn-pinned" },
+      "anthropic", expect.any(Set), "claude-3-7-sonnet", { preferredConnectionId: "conn-pinned", requestedModel: "claude-3-7-sonnet" },
     );
     // Caller boundary forwards the actually chosen connection downstream.
     expect(mocks.handleChatCore.mock.calls[0][0].connectionId).toBe("c1");
@@ -107,7 +107,7 @@ describe("Chat account pinning header passthrough", () => {
     const res = await handleChat(req({ "x-connection-id": "   " }));
     expect(res.status).toBe(200);
     expect(mocks.getProviderCredentials).toHaveBeenCalledWith(
-      "anthropic", expect.any(Set), "claude-3-7-sonnet", { preferredConnectionId: null },
+      "anthropic", expect.any(Set), "claude-3-7-sonnet", { preferredConnectionId: null, requestedModel: "claude-3-7-sonnet" },
     );
   });
 
@@ -116,7 +116,7 @@ describe("Chat account pinning header passthrough", () => {
     const res = await handleChat(req());
     expect(res.status).toBe(200);
     expect(mocks.getProviderCredentials).toHaveBeenCalledWith(
-      "anthropic", expect.any(Set), "claude-3-7-sonnet", { preferredConnectionId: null },
+      "anthropic", expect.any(Set), "claude-3-7-sonnet", { preferredConnectionId: null, requestedModel: "claude-3-7-sonnet" },
     );
   });
 

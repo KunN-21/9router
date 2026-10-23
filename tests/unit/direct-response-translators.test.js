@@ -92,7 +92,8 @@ describe("responses-to-claude direct response translator", () => {
     }, state);
     const msgDelta = done.find((e) => e.type === "message_delta");
     expect(msgDelta.delta.stop_reason).toBe("tool_use");
-    expect(msgDelta.usage.input_tokens).toBe(100);
+    // Exclusive Claude schema: cached input is reported separately from input_tokens.
+    expect(msgDelta.usage.input_tokens).toBe(80);
     expect(msgDelta.usage.output_tokens).toBe(50);
     expect(msgDelta.usage.cache_read_input_tokens).toBe(20);
     expect(done.some((e) => e.type === "message_stop")).toBe(true);

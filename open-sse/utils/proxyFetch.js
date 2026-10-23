@@ -400,10 +400,14 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   // strictProxy to mean "do not replay this request directly if the proxy
   // fails" (a replayed COSY signature returns 403), not "a proxy is required".
   // With nothing configured they must keep working.
+  //
+  // A bare url is not intent: resolveConnectionProxyUrl above only honours
+  // `url`/`connectionProxyUrl` when the proxy is enabled or tied to a pool, so
+  // a url on its own can never be used. Counting it here would refuse a direct
+  // request the caller never asked to proxy.
   const proxyIntended = proxyOptions?.proxyPoolId
     || proxyOptions?.enabled === true
-    || proxyOptions?.connectionProxyEnabled === true
-    || !!normalizeString(proxyOptions?.url ?? proxyOptions?.connectionProxyUrl);
+    || proxyOptions?.connectionProxyEnabled === true;
   if (proxyOptions?.strictProxy === true && proxyIntended) {
     throw new Error("[ProxyFetch] Proxy required but none resolved (strictProxy=true)");
   }

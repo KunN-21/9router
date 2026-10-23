@@ -78,6 +78,9 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     expect(checkFallbackError(400, "Bad request")).toEqual({
       shouldFallback: false,
       cooldownMs: 0,
+      // Upstream 5cdcddf55 ("advance past a request-scoped 4xx") added this
+      // field; the account-rotation contract above is unchanged.
+      requestScoped: true,
     });
   });
 });

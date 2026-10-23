@@ -263,9 +263,10 @@ const proxyIntentFailed = (proxyOptions) => {
     || proxyOptions?.connectionProxyEnabled === true
     || (proxyOptions?.url || proxyOptions?.connectionProxyUrl || "").trim().length > 0,
   );
-  if (!proxyIntended) return false;
-  // A vercel/cloudflare-style relay rides on plain fetch, not this h2 path.
-  if (proxyOptions?.vercelRelayUrl) return false;
+  // A relay is proxy intent here too: executeAgent always opens the h2 duplex
+  // (only the ChatService path in execute() can ride a relay), so a relay on
+  // this path would silently become a direct socket as well.
+  if (!proxyIntended && !(proxyOptions?.vercelRelayUrl || "").trim()) return false;
   // Proxy intended and strict: the h2 transport below cannot carry it.
   return true;
 };

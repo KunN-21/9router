@@ -82,6 +82,20 @@ export function capabilitiesFromServiceKind(kind) {
   return SERVICE_KIND_CAPABILITIES[kind] || null;
 }
 
+// OpenCode Zen Ox Alpha Free — image input + always-thinking reasoning
+// (provider catalog lists reasoning_options [low, high, max]; videoInput
+// stays false until transport support exists). Shared by the four
+// provider/id pairs below; never exposed globally so other providers'
+// same-named models keep pattern/default caps.
+const OX_ALPHA_CAPABILITIES = {
+  vision: true,
+  reasoning: true,
+  thinkingFormat: "openai-low-high-max",
+  thinkingCanDisable: false,
+  contextWindow: 1000000,
+  maxOutput: 131072,
+};
+
 /**
  * Canonical exact-id overrides — used for exceptions that patterns would
  * otherwise mis-match. Only declare deltas vs DEFAULT.
@@ -215,7 +229,6 @@ export const MODEL_CAPABILITIES = {
   "longcat-2.5-preview-free":{ vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 131072 },
   "north-mini-code-free":    { reasoning: true, thinkingFormat: "openai", contextWindow: 256000, maxOutput: 64000 },
   "ring-2.6-1t-free":        { reasoning: true, thinkingFormat: "openai", contextWindow: 262000, maxOutput: 66000 },
-  "x-preview-f-free":        { vision: true, videoInput: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 131072 },
 };
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
@@ -257,7 +270,19 @@ export const PROVIDER_CAPABILITIES = {
     // pattern: the upstream catalog reports context_length 1000000 and the synced catalog
     // maxOutput 128000 for this id (the provider override short-circuits before the
     // catalog overlay, so maxOutput must be stated here too).
-    "claude-haiku-5-5": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
+    // search stays false: the lane publishes no built-in web-search tool on this
+    // id, and the broad haiku pattern's `search: true` is the guess this exact
+    // entry exists to override.
+    "claude-haiku-5-5": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
+    "ox-alpha-free": OX_ALPHA_CAPABILITIES,
+  },
+  // OpenCode Zen Ox Alpha Free — full ids (opencode/opencode-go, seen by runtime
+  // request handling) + routed aliases (oc/ocg, read raw by combo reorderByCapabilities).
+  "ocg": {
+    "ox-alpha-free": OX_ALPHA_CAPABILITIES,
+  },
+  "oc": {
+    "x-preview-f-free": OX_ALPHA_CAPABILITIES,
   },
   // OpenCode Free (oc) — the free lane's MiMo route is OpenRouter-backed and takes
   // the plain OpenAI reasoning_effort enum verbatim (live probe on
@@ -274,6 +299,7 @@ export const PROVIDER_CAPABILITIES = {
   // accepted, so the 32k figure is not enforced at request validation).
   "opencode": {
     "mimo-v2.6-flash-free": { vision: true, audioInput: true, videoInput: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1048576, maxOutput: 131072 },
+    "x-preview-f-free": OX_ALPHA_CAPABILITIES,
   },
   "commandcode": {
     // The generic commandcode fallback (1M/384k for every unlisted model) happened
@@ -796,21 +822,23 @@ function isCommandCodeTextOnly(model) {
 export function getCapabilitiesForModel(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
+  // Strip a trailing thinking suffix "model(value)" so lookups resolve the base id.
+  const normalized = String(model).replace(/\([^()]+\)\s*$/, "").trim();
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
-  const baseModel = model.includes("/") ? model.split("/").pop() : model;
+  const baseModel = normalized.includes("/") ? normalized.split("/").pop() : normalized;
 
   // CommandCode wire is /alpha/generate for every model. Family patterns
   // (deepseek-v4 → thinkingFormat:deepseek, vision:false) must not win here.
   if (provider === "commandcode" || provider === "cmc") {
     const providerCaps = PROVIDER_CAPABILITIES.commandcode;
-    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
+    if (providerCaps?.[normalized]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[normalized] };
     if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
     return {
       ...DEFAULT_CAPABILITIES,
       reasoning: true,
       thinkingFormat: "commandcode",
       thinkingEffortSupported: true,
-      vision: !isCommandCodeTextOnly(model),
+      vision: !isCommandCodeTextOnly(normalized),
       contextWindow: 1000000,
       maxOutput: COMMANDCODE_MAX_TOKENS_CEILING,
     };
@@ -819,24 +847,24 @@ export function getCapabilitiesForModel(provider, model) {
   // 1. Provider-specific override
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];
-    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
+    if (providerCaps?.[normalized]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[normalized] };
     if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
   }
 
   // 2. Canonical exact, then catalog overlay so provider-scoped models.dev
   //    deltas still apply. Step 1 above still short-circuits.
-  if (MODEL_CAPABILITIES[baseModel]) return refine(MODEL_CAPABILITIES[baseModel], provider, model);
-  if (MODEL_CAPABILITIES[model]) return refine(MODEL_CAPABILITIES[model], provider, model);
+  if (MODEL_CAPABILITIES[baseModel]) return refine(MODEL_CAPABILITIES[baseModel], provider, normalized);
+  if (MODEL_CAPABILITIES[normalized]) return refine(MODEL_CAPABILITIES[normalized], provider, normalized);
 
   // 3. Pattern match (first match wins), refined by catalog + name heuristic
   for (const { pattern, caps } of PATTERN_CAPABILITIES) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
-      return refine(caps, provider, model);
+    if (matchPattern(pattern, baseModel) || matchPattern(pattern, normalized)) {
+      return refine(caps, provider, normalized);
     }
   }
 
   // 4. Floor
-  return refine(null, provider, model);
+  return refine(null, provider, normalized);
 }
 
 // Gemini 4 (Argon) drops sampling params and requires functionResponse-last merged user turns.

@@ -171,10 +171,13 @@ function frameCarriesContent(line) {
 
   // A usage frame counts only if it reports generated output; a frame carrying
   // prompt tokens and completion_tokens: 0 is an accounting record, not an answer.
-  if (hasOutputTokens(parsed.usage) || hasOutputTokens(parsed.response?.usage)) return true;
+  // A terminal frame is never content on its own: the pipeline injects ESTIMATED
+  // usage into the finish chunk, so its completion_tokens would otherwise turn a
+  // finished-empty stream into a "content" one.
+  if (!frameFinishReason(line) && (hasOutputTokens(parsed.usage) || hasOutputTokens(parsed.response?.usage))) return true;
 
-  // OpenAI chat: text or a tool call. Reasoning is NOT content here — see
-  // frameCarriesReasoning and the mid-thought commit in the peek's tail.
+  // OpenAI chat: text or a tool call. A reasoning-only chat stream is retried —
+  // see emptyFailover.js deltaHasClientContent.
   const delta = parsed.choices?.[0]?.delta;
   if (nonEmptyString(delta?.content)) return true;
   if (delta?.tool_calls?.length || delta?.function_call) return true;
@@ -184,16 +187,22 @@ function frameCarriesContent(line) {
   // arrives there and the arguments follow as input_json_delta.
   if (parsed.type === "content_block_delta") {
     const d = parsed.delta;
-    if (nonEmptyString(d?.text) || nonEmptyString(d?.partial_json)) return true;
+    if (nonEmptyString(d?.text) || nonEmptyString(d?.partial_json) || nonEmptyString(d?.thinking)) return true;
   }
   if (parsed.type === "content_block_start" && parsed.content_block?.type === "tool_use") return true;
 
   // OpenAI Responses API: output_text/function-call argument deltas, done text, item done, or completed output.
-  // Complete payloads also count: message item done and completed output.
-  if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) {
-    if (!parsed.type.startsWith("response.reasoning")) return true;
-  }
+  // Complete payloads also count: reasoning text done, reasoning summary done,
+  // reasoning item done (summary text or item.text fallback), message item done.
+  if (typeof parsed.type === "string" && parsed.type.endsWith(".delta") && nonEmptyString(parsed.delta)) return true;
   if (parsed.type === "response.output_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.reasoning_summary_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.reasoning_text.done" && nonEmptyString(parsed.text)) return true;
+  if (parsed.type === "response.output_item.done" && parsed.item?.type === "reasoning") {
+    const summary = parsed.item.summary;
+    if (Array.isArray(summary) && summary.some((p) => nonEmptyString(p?.text))) return true;
+    if (nonEmptyString(parsed.item.text)) return true;
+  }
   if (parsed.type === "response.content_part.done") {
     const part = parsed.part || parsed.content_part;
     if (nonEmptyString(part?.text)) return true;
@@ -399,6 +408,8 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
                 streamError = frameError;
               } else if (frameCarriesContent(tail)) {
                 hasContent = true;
+              } else if (frameCarriesReasoning(tail)) {
+                sawReasoning = true;
               }
               finishReason = frameFinishReason(tail) || finishReason;
             }
@@ -427,6 +438,7 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
               break;
             }
             if (frameCarriesContent(line)) { hasContent = true; break; }
+            if (!sawReasoning && frameCarriesReasoning(line)) sawReasoning = true;
             finishReason = frameFinishReason(line) || finishReason;
           }
           if (streamError) { settled = true; return "error_frame"; }
@@ -474,6 +486,12 @@ async function peekStreamForContent(response, { timeoutMs = peekTimeoutMs(), sig
     await reader.cancel().catch(() => {});
     return { hasContent: false, body: null, timedOut: false, error: streamError };
   }
+
+  // Mid-thought commit: the peek gave up (stream ended or deadline hit) while the
+  // model was still reasoning, with no terminal frame. A turn that FINISHED having
+  // produced only reasoning is empty (finishReason set); a turn cut off mid-thought
+  // is progress and must not be handed to the next member.
+  if (!hasContent && sawReasoning && !finishReason) hasContent = true;
 
   // Replay the buffered bytes, then continue from the live reader.
   const replayBody = () => new ReadableStream({

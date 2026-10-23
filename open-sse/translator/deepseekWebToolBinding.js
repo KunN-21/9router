@@ -2,7 +2,7 @@
 // calls. Split from deepseekWebTools.js so the parser stays small;
 // deepseekWebTools.js re-exports the public detectors.
 
-import Ajv2020 from "ajv/dist/2020.js";
+import { createRequire } from "node:module";
 
 import {
   getRequestedToolNames,
@@ -11,7 +11,22 @@ import {
   resolveRequestedToolName,
 } from "./webTools.js";
 
-const ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: false });
+// ajv sits in optionalDependencies (npm install still succeeds without it), but
+// executors/index.js imports deepseek-web.js eagerly — a top-level `import
+// "ajv/dist/2020.js"` takes the whole executor registry down on an install that
+// skipped optional deps. Resolve it on first use instead, once.
+const require = createRequire(import.meta.url);
+let ajv;
+function getAjv() {
+  if (ajv !== undefined) return ajv;
+  try {
+    const { default: Ajv2020 } = require("ajv/dist/2020.js");
+    ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: false });
+  } catch {
+    ajv = null; // absent — validateToolArguments fails closed
+  }
+  return ajv;
+}
 const toolValidatorCache = new WeakMap();
 
 export function asRecord(value) {
@@ -39,8 +54,9 @@ export function validateToolArguments(requestedTools, name, args) {
   }
   let validate = validators.get(name);
   if (validate === undefined) {
+    const instance = getAjv();
     try {
-      validate = ajv.compile(schema);
+      validate = instance ? instance.compile(schema) : null;
     } catch {
       validate = null;
     }

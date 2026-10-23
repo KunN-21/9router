@@ -497,17 +497,19 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   if (PROVIDERS[provider]?.quirks?.dropOutputConfig) {
     delete body.output_config;
   }
-  // opencode-go's Messages endpoint rejects Anthropic's context_management
-  // (beta-only shape). Scoped to opencode-go — Codex/Antigravity keep it.
-  if (provider === "opencode-go" && body.context_management) delete body.context_management;
-
   // Claude Code puts a `context_management` block (context-editing strategy) in
   // every request; only Anthropic accepts it — gateways fronting other engines
   // answer 400 "context_management: Extra inputs are not permitted". Same-format
   // claude→claude requests skip body rebuilding in the translator, so the field
   // rides through to every non-Anthropic provider on the Claude transport.
-  const isAnthropicServing = provider === "claude" || provider?.startsWith?.("anthropic-compatible-");
-  if (!isAnthropicServing) {
+  // Antigravity and Codex keep it: neither speaks the Claude wire (their target
+  // formats are `antigravity` / `openai-responses`), and the fork narrowed this
+  // strip to the Claude-transport engines that actually reject the field.
+  const keepsContextManagement = provider === "claude"
+    || provider?.startsWith?.("anthropic-compatible-")
+    || provider === "antigravity"
+    || provider === "codex";
+  if (!keepsContextManagement) {
     delete body.context_management;
   }
 
