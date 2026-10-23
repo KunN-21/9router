@@ -1,3 +1,10 @@
+# v0.5.109-local.1 (2026-10-24)
+
+- Đồng bộ upstream từ v0.5.99 lên v0.5.109 (`f39d8f074`), 226 commit: Muse (Meta Model API) provider với OAuth device-code và transport Responses, SenseNova, web-cookie executors (grok-web qua Chrome-TLS, gemini-web, chatgpt-web), Codex OAuth STT, System One decision models cho Ollama, Smart Router combo, và resolve thinking format theo từng transport.
+- Giữ nguyên toàn bộ tính năng local qua 134 file conflict: caveman, ponytail, pxpipe, headroom, token saver và RTK custom filters, Codex Fast, custom headers, ocEgress, family profiles, tách `chatCore/upstreamRoute`.
+- Kiểm chứng: 5874 pass / 56 fail, so với 5390 / 136 ngay sau merge và 155 fail tại commit trước merge. 56 fail còn lại đều không phải hồi quy — 10 file là test mới của upstream chưa từng xanh ở đây, 6 test nằm trong `tests/__baseline__/known-fails.txt`, 1 test fail y hệt trước merge. Ba baseline gate (alias, providers, oauth-urls) byte-for-byte equal.
+- Chưa kiểm thử live provider nào.
+
 # v0.5.99-local.4 (2026-10-15)
 
 - Tổng hợp local.2/local.3 kể từ local.1 đã phát hành: giữ Codex Fast (client-intent, per-account priority, copy-isolation), Custom Headers không giới hạn (UI CustomConfigCard, API overrides atomic, last case-insensitive dispatch, log mask), tích hợp chọn lọc Gates A–E, OpenCode PR #4806 (native IDs, session headers, caches, policy errors) và PR #4860 (fingerprint v2, endpoint free tier `/inference/v1/*`, ưu tiên định tuyến `/inference/v1/responses` cho Muse Spark).
