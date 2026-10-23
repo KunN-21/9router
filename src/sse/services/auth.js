@@ -19,6 +19,16 @@ function githubMonthlyResetMs(status, errorText, provider) {
 }
 
 /**
+ * Active proxy pools that have a usable URL, excluding candidates already tried by this request.
+ */
+async function resolveProxyPoolCandidates(excludeSet) {
+  const pools = (await getProxyPools({ isActive: true })).filter((p) => p.proxyUrl);
+  const candidates = pools.map((p) => p.id)
+    .filter((id) => !excludeSet.has(`proxy:${id}`) && !excludeSet.has(id));
+  return { configured: pools.length, candidates };
+}
+
+/**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
  * @param {string} provider - Provider name
@@ -49,14 +59,35 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
       if (strategy !== "none") {
-        const allPools = await getProxyPools({ isActive: true });
-        const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
-        pickedId = pickProxyPoolId(poolIds, strategy, providerId);
+        const { configured, candidates } = await resolveProxyPoolCandidates(excludeSet);
+        if (candidates.length === 0 && configured > 0) {
+          // Avoid silently leaking requests to the host's direct egress when all pools failed.
+          log.warn("AUTH", `${provider} | all ${configured} proxy pool(s) excluded`);
+          return null;
+        }
+        // When no usable pool remains configured, preserve the existing direct noauth behaviour.
+        pickedId = pickProxyPoolId(candidates, strategy, providerId);
+      } else if (pickedId && (excludeSet.has(`proxy:${pickedId}`) || excludeSet.has(pickedId))) {
+        // A pinned pool failed; try the next healthy active pool within this request's retry loop.
+        const { candidates } = await resolveProxyPoolCandidates(excludeSet);
+        if (candidates.length === 0) {
+          log.warn("AUTH", `${provider} | configured proxy pool ${pickedId} excluded, no fallback pool available`);
+          return null;
+        }
+        log.warn("AUTH", `${provider} | configured proxy pool ${pickedId} excluded → failing over to pool ${candidates[0]}`);
+        pickedId = candidates[0];
       }
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
+      const usingPool = resolvedProxy.proxyPool != null;
+      const resolvedPoolId = resolvedProxy.proxyPoolId || pickedId || "";
+      const connectionId = usingPool ? `proxy:${resolvedPoolId}` : "noauth";
+      const connectionName = usingPool
+        ? (resolvedProxy.proxyPool.name || `Proxy (${resolvedPoolId.slice(0, 8)})`)
+        : "Public";
       return {
-        id: "noauth",
-        connectionName: "Public",
+        id: connectionId,
+        connectionId,
+        connectionName,
         isActive: true,
         accessToken: "public",
         providerSpecificData: {
@@ -258,6 +289,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  if (connectionId.startsWith("proxy:")) {
+    const { shouldFallback, cooldownMs } = checkFallbackError(status, errorText, 0, resolveProviderId(provider));
+    return { shouldFallback, cooldownMs };
+  }
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;

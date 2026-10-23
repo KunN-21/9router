@@ -34,6 +34,8 @@ export function isMuseSparkModel(modelId) {
 // Curated registry entries always win; unknown-id fallback only.
 const OPENCODE_FAMILIES = [
   { match: /^(grok|gpt|muse[-_]?spark)/i, supportedFormats: [FORMATS.OPENAI_RESPONSES], targetFormat: FORMATS.OPENAI_RESPONSES },
+  // OpenCode Zen .1 DeepSeek models are chat-only; wider transport support belongs to Go.
+  { match: /^deepseek-v4\.1-(pro|flash)/, supportedFormats: [FORMATS.OPENAI] },
   { match: /^deepseek-v4-(pro|flash)/, supportedFormats: [FORMATS.OPENAI, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES] },
   { match: /^(minimax|qwen)/, supportedFormats: [FORMATS.OPENAI, FORMATS.CLAUDE] },
   { match: /^claude-/i, supportedFormats: [FORMATS.CLAUDE] },
