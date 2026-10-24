@@ -1,25 +1,14 @@
-# v0.5.109-local.4 (2026-10-24)
+# v0.5.109-local.5 (2026-10-24)
 
-- **Sửa lỗi `Stream ended unexpectedly without terminal event` khi dùng `muse-web` trong combo.** Khi request có `stream: true` **và** `tools[]`, nhưng Hatch trả lời bằng văn xuôi (không sinh file block), code cũ rơi xuống nhánh trả JSON cho một request streaming. Client không nhận được event kết thúc → combo coi là hỏng và nhảy sang model kế tiếp.
-- Gộp về **một** object completion cho cả hai đường, rồi rẽ nhánh theo `stream` ở cuối. Không còn khả năng hai đường lệch nhau về thứ được sinh ra.
-- Kiểm chứng live cả hai nhánh: `stream + tools + không có file block` → SSE có `delta.content`, `finish_reason: stop`, `data: [DONE]`; `stream + tools + có file block` → SSE có `delta.tool_calls`. Trước khi sửa, nhánh đầu trả `application/json` cho client đang chờ SSE.
-- Full suite `5908 pass / 56 fail`, **0 hồi quy**.
-
-# v0.5.109-local.3 (2026-10-24)
-
-- **`muse-web` làm được agentic coding.** Hatch (agent của muse.ai) không có protocol gọi tool phía client: tool của nó chạy trong VM của Meta và nó chỉ *kể lại* là đã gọi. Đo thực tế 3 biến thể prompt — cả 3 đều thất bại, `0` tool call. Nhưng nó **tuân thủ** yêu cầu xuất file dạng block có đánh dấu.
-- Hợp đồng mới trong `open-sse/executors/muse-web/fileBlocks.js`: yêu cầu `=== FILE: <path> === … === END ===`, rồi 9Router đổi mỗi block thành `write_file` tool_call chuẩn OpenAI để **client chạy trên máy user**. Hoạt động của Hatch trong VM Meta bị bỏ hoàn toàn — chỉ nội dung file được giữ.
-- Dạng block có marker được chọn thay vì fenced code vì `innerText` của trang **nuốt mất dấu ``` ``` **, và một block không có terminator sẽ nuốt luôn phần văn xuôi phía sau. `=== END ===` là thứ sống sót qua DOM và giới hạn được body.
-- Sửa `flattenMessages` (`muse-web/prompt.js`): hoist system/developer lên đầu (contract của shim `<tool>` trước đây rơi **sau** câu hỏi — đúng chỗ model bỏ qua), render `assistant.tool_calls` và `role: "tool"` thay vì xoá (trước đây lịch sử tool biến mất hoàn toàn, model gọi lặp vô hạn), thêm câu chặn lặp.
-- Bỏ chặn `400` cũ cho `tools[]`; `functions[]` legacy vẫn bị từ chối. Tool mode buffer toàn bộ reply rồi phát lại dưới dạng SSE tool-call burst — không thể stream token khi phải parse xong mới biết đâu là file.
-- Có `extractShellCommands` + block `=== CMD ===` cho `run_command`, chỉ bật khi client khai báo tool lệnh.
-- Guard: từ chối path tuyệt đối, chứa `..`, ký tự điều khiển; giới hạn 64 call/lượt.
-- Kiểm chứng live: 1 file → 1 call; 2 file → 2 call; vòng lặp tool → lượt 2 trả `finish_reason: stop`, **không viết lại** file đã xong. 22 unit test cho parser. Full suite `5904 pass / 58 fail`; 2 fail mới (`compatible-provider-connections`, `family-direct-route`) đã xác nhận **không phải hồi quy** — fail y hệt khi stash toàn bộ thay đổi.
+- **Revert tính năng agentic coding của `muse-web`** (revert `c4b4ed1f3` và `a42ed72cb`). Đã test live và quyết định bỏ: Hatch chỉ phát file block khi được nhắc rõ trong từng lượt, mỗi lượt mất 12-28 giây vì phải mở browser thật, không stream được token ở tool mode, và vỡ ngay khi muse.ai đổi DOM. Trả `muse-web` về hành vi gốc: từ chối `tools[]` bằng `400`, chỉ dùng chat/ảnh/video.
+- Xóa `open-sse/executors/muse-web/fileBlocks.js`, `tests/unit/muse-web-file-blocks.test.js`; `toolCompletionToSseStream` trở lại private trong `chatgptWebTools.js`.
+- **Giữ** commit cookie `a2f968b1c` (`__Host-` prefix) — lỗi đó ảnh hưởng cả grok-web / gemini-web / chatgpt-web / deepseek-web / uc-web qua `parseCookieString` dùng chung, không riêng muse.
+- Full suite `5885 pass / 55 fail`, **0 hồi quy** so với `local.4`.
 
 # v0.5.109-local.2 (2026-10-24)
 
 - **Sửa `muse-web` không dùng được ("Invalid cookie fields")**: cookie `__Host-*` không được phép có attribute `Domain` (RFC 6265bis §4.1.3). muse.ai đặt `__Host-hatch_one_tap`, và `parseCookieString`/`toMuseCookies` gán `domain: ".muse.ai"` cho mọi cookie — Chromium từ chối **toàn bộ batch** `addCookies()`, nên cả 6 cookie đều không được nạp và provider chết ngay ở bước mở context.
-- Thêm helper `hostOnlyScope(name, domain)` trong `open-sse/services/browserPool.js`, dùng ở cả `parseCookieString` (dùng chung cho grok-web / gemini-web / chatgpt-web / deepseek-web / uc-web) và `toMuseCookies` của muse-web. Cookie `__Secure-*` không bị ảnh hưởng vì prefix đó vẫn cho phép `Domain`.
+- Thêm helper `cookieScope(name, domain)` trong `open-sse/services/browserPool.js`, dùng ở cả `parseCookieString` (dùng chung cho grok-web / gemini-web / chatgpt-web / deepseek-web / uc-web) và `toMuseCookies` của muse-web. Cookie `__Secure-*` không bị ảnh hưởng vì prefix đó vẫn cho phép `Domain`.
 - Thêm `tests/unit/web-cookie-host-prefix.test.js` (7 test): `__Host-` bỏ Domain, cookie thường giữ Domain, hostname trần được chuẩn hoá thành `.domain`, `__Secure-` không bị coi là host-only.
 - Đã xác nhận trên đúng header cookie thật của tài khoản đang gặp lỗi: 6/6 cookie hợp lệ, 0 vi phạm. **Chưa chạy live trên muse.ai sau khi sửa.**
 
