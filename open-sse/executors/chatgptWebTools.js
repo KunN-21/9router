@@ -64,7 +64,7 @@ async function applyToolCallsToJsonResponse(response, requestedTools, idSeed) {
  * accumulate parallel calls by that field, and a missing index collapses them
  * into the first slot. No token-by-token streaming while tools are active.
  */
-function toolCompletionToSseStream(completion, cid, created, model) {
+export function toolCompletionToSseStream(completion, cid, created, model) {
   const encoder = new TextEncoder();
   const choice = completion?.choices?.[0] ?? {};
   const message = choice.message ?? {};

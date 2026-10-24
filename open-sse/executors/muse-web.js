@@ -27,6 +27,8 @@ import {
   MuseWebTimeoutError,
 } from "./muse-web/session.js";
 import { flattenMessages } from "./muse-web/prompt.js";
+import { buildFileBlockContract, buildToolCallsFromReply } from "./muse-web/fileBlocks.js";
+import { toolCompletionToSseStream } from "./chatgptWebTools.js";
 import * as dom from "./muse-web/dom.js";
 
 export { isMissingBrowserExecutable } from "./browserExecutableCheck.js";
@@ -480,21 +482,16 @@ export class MuseWebExecutor extends BaseExecutor {
     const messages = requestBody.messages || [];
     const modelId = model || DEFAULT_MODEL_ID;
 
-    // The muse.ai Hatch agent only uses its own built-in tools (web search,
-    // image generation) and explicitly ignores prompt-level tool contracts —
-    // verified live: it answers around them instead of emitting calls. Fail
-    // fast with a clean 400 rather than a doomed emulation.
-    const requestedTools = requestBody.tools;
-    const requestedFunctions = requestBody.functions;
-    if (requestedTools != null && (!Array.isArray(requestedTools) || requestedTools.length > 0)) {
-      return {
-        response: errorResponse(400, "Muse Web does not support OpenAI function tools"),
-        url: "https://muse.ai",
-        headers: {},
-        transformedBody: body,
-      };
-    }
-    if (requestedFunctions != null && (!Array.isArray(requestedFunctions) || requestedFunctions.length > 0)) {
+    // Hatch has no function-calling protocol — its built-in tools run inside
+    // Meta's cloud VM, not on the user's machine, and it narrates a requested
+    // tool call instead of emitting one (verified live across three prompt
+    // variants). Rejecting the request was the old behaviour; instead we swap
+    // the contract: ask Hatch for ```file:<path>``` blocks and convert each one
+    // into a write_file tool_call that the CLIENT executes. Execution stays
+    // local, which is the only version of "agentic" that means anything here.
+    const requestedTools = Array.isArray(requestBody.tools) ? requestBody.tools : [];
+    const requestedFunctions = Array.isArray(requestBody.functions) ? requestBody.functions : [];
+    if (requestedFunctions.length > 0) {
       return {
         response: errorResponse(400, "Muse Web does not support legacy function tools"),
         url: "https://muse.ai",
@@ -502,8 +499,20 @@ export class MuseWebExecutor extends BaseExecutor {
         transformedBody: body,
       };
     }
+    const toolMode = requestedTools.length > 0;
+    const toolNames = new Set(
+      requestedTools
+        .map((t) => (typeof t?.function?.name === "string" ? t.function.name : ""))
+        .filter(Boolean)
+    );
+    // Only offer the shell half of the contract when the client actually
+    // declared a command tool, so a read-only agent is never asked to run one.
+    const allowCommands = ["run_command", "bash", "shell", "terminal"].some((n) => toolNames.has(n));
 
-    const { text: flatPrompt, images } = flattenMessages(messages);
+    const promptMessages = toolMode
+      ? [...messages, { role: "system", content: buildFileBlockContract({ allowCommands }) }]
+      : messages;
+    const { text: flatPrompt, images } = flattenMessages(promptMessages);
 
     if (!flatPrompt) {
       return {
@@ -535,7 +544,11 @@ export class MuseWebExecutor extends BaseExecutor {
         await page?.close().catch(() => {});
       };
 
-      if (stream) {
+      // Tool mode needs the COMPLETE reply before it can parse file blocks, so
+      // it can never stream token-by-token — the client would already have
+      // consumed prose that turns out to be a file body. Buffer, convert, then
+      // replay as either JSON or a tool-call SSE burst.
+      if (stream && !toolMode) {
         const encoder = new TextEncoder();
         const streamPage = page;
         page = null; // ownership moves into the stream
@@ -584,6 +597,40 @@ export class MuseWebExecutor extends BaseExecutor {
 
       const responseText = await pollChat({ page, base, signal });
       await closePage();
+
+      if (toolMode) {
+        const { toolCalls, content } = buildToolCallsFromReply(responseText, { allowCommands, idSeed: "muw" });
+        if (toolCalls) {
+          const completion = formatChatCompletion(content, modelId, "tool_calls");
+          completion.choices[0].message = { role: "assistant", content: content || null, tool_calls: toolCalls };
+          if (stream) {
+            return {
+              response: new Response(
+                toolCompletionToSseStream(
+                  completion,
+                  completion.id,
+                  completion.created,
+                  modelId
+                ),
+                { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } }
+              ),
+              url: "https://muse.ai",
+              headers: {},
+              transformedBody: body,
+            };
+          }
+          return {
+            response: new Response(JSON.stringify(completion), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+            url: "https://muse.ai",
+            headers: {},
+            transformedBody: body,
+          };
+        }
+      }
+
       return {
         response: new Response(JSON.stringify(formatChatCompletion(responseText, modelId)), {
           status: 200,

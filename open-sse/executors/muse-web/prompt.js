@@ -48,26 +48,76 @@ export function messageTurns(messages) {
  *
  * A lone user turn is sent verbatim; anything richer gets role headers plus an
  * [Instruction] suffix telling the agent to answer as the Assistant.
+ *
+ * Two ordering rules matter, and both were learned the hard way:
+ *
+ *  - System/developer turns are HOISTED to the top. The webTools shim appends
+ *    its `<tool>` contract as a trailing system message, so rendering in array
+ *    order put the contract AFTER the user's ask — the one placement an agentic
+ *    model reliably ignores. gemini-web and chatgpt-web already hoist.
+ *  - Assistant turns that called a tool and the `role: "tool"` results are
+ *    RENDERED, not dropped. They carry no text of their own, so a text-only
+ *    filter silently erased the entire tool history and the model re-issued the
+ *    same call forever. This is the loop gemini-web documents at length.
  */
 export function flattenMessages(messages) {
   const images = [];
-  const turns = [];
+  const systemLines = [];
+  const lines = [];
+  const callNameById = new Map();
+  let sawToolActivity = false;
+
   for (const message of messages || []) {
     const role = message?.role || "user";
     const text = contentToText(message?.content, images).trim();
-    if (text) turns.push([role, text]);
+
+    if (role === "system" || role === "developer") {
+      if (text) systemLines.push(text);
+      continue;
+    }
+    if (role === "user") {
+      if (text) lines.push(`[${ROLE_LABELS[role]}]\n${text}`);
+      continue;
+    }
+    if (role === "assistant") {
+      const parts = [];
+      if (text) parts.push(text);
+      for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+        const name = typeof call?.function?.name === "string" ? call.function.name : "";
+        const rawArgs = call?.function?.arguments;
+        const args = typeof rawArgs === "string" && rawArgs ? rawArgs : JSON.stringify(rawArgs ?? {});
+        if (call?.id) callNameById.set(call.id, name);
+        parts.push(`<tool>{"name": ${JSON.stringify(name)}, "arguments": ${args}}</tool>`);
+        sawToolActivity = true;
+      }
+      if (parts.length) lines.push(`[${ROLE_LABELS.assistant}]\n${parts.join("\n")}`);
+      continue;
+    }
+    if (role === "tool") {
+      const name = (message?.tool_call_id && callNameById.get(message.tool_call_id)) || message?.name || "tool";
+      lines.push(`[${ROLE_LABELS.tool} (${name})]\n${text || "(no output)"}`);
+      sawToolActivity = true;
+      continue;
+    }
+    if (text) lines.push(`[${ROLE_LABELS[role] || role}]\n${text}`);
   }
 
-  if (turns.length === 0) return { text: "", images };
-
-  if (turns.length === 1 && turns[0][0] === "user") {
-    return { text: turns[0][1], images };
+  if (lines.length === 0 && systemLines.length === 0) return { text: "", images };
+  if (lines.length === 1 && !systemLines.length && !sawToolActivity && lines[0].startsWith(`[${ROLE_LABELS.user}]\n`)) {
+    return { text: lines[0].slice(ROLE_LABELS.user.length + 3), images };
   }
 
-  const blocks = turns.map(([role, text]) => `[${ROLE_LABELS[role] || role}]\n${text}`);
-  blocks.push(
-    "[Instruction]\nContinue the conversation above and reply as the Assistant to the last " +
-      "User message. Output only the reply."
-  );
-  return { text: blocks.join("\n\n"), images };
+  if (sawToolActivity) {
+    lines.push(
+      "[Instruction]\nContinue the task using the tool results above. Do NOT repeat tool calls " +
+        "that already succeeded; perform the next step or give the final answer."
+    );
+  } else {
+    lines.push(
+      "[Instruction]\nContinue the conversation above and reply as the Assistant to the last " +
+        "User message. Output only the reply."
+    );
+  }
+
+  return { text: [...systemLines, ...lines].join("\n\n"), images };
 }
