@@ -598,41 +598,36 @@ export class MuseWebExecutor extends BaseExecutor {
       const responseText = await pollChat({ page, base, signal });
       await closePage();
 
+      // One completion object from here on, so the streaming and buffered paths
+      // can never disagree about what was produced.
+      let completion = null;
       if (toolMode) {
         const { toolCalls, content } = buildToolCallsFromReply(responseText, { allowCommands, idSeed: "muw" });
         if (toolCalls) {
-          const completion = formatChatCompletion(content, modelId, "tool_calls");
+          completion = formatChatCompletion(content, modelId, "tool_calls");
           completion.choices[0].message = { role: "assistant", content: content || null, tool_calls: toolCalls };
-          if (stream) {
-            return {
-              response: new Response(
-                toolCompletionToSseStream(
-                  completion,
-                  completion.id,
-                  completion.created,
-                  modelId
-                ),
-                { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } }
-              ),
-              url: "https://muse.ai",
-              headers: {},
-              transformedBody: body,
-            };
-          }
-          return {
-            response: new Response(JSON.stringify(completion), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            }),
-            url: "https://muse.ai",
-            headers: {},
-            transformedBody: body,
-          };
         }
+      }
+      if (!completion) completion = formatChatCompletion(responseText, modelId);
+
+      // A streamed request MUST be answered with an SSE body. Returning JSON to
+      // a streaming client left the client's stream without a terminal event,
+      // which surfaced to the caller as "Stream ended unexpectedly without
+      // terminal event" — the tool-less reply path had exactly that hole.
+      if (stream) {
+        return {
+          response: new Response(
+            toolCompletionToSseStream(completion, completion.id, completion.created, modelId),
+            { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } }
+          ),
+          url: "https://muse.ai",
+          headers: {},
+          transformedBody: body,
+        };
       }
 
       return {
-        response: new Response(JSON.stringify(formatChatCompletion(responseText, modelId)), {
+        response: new Response(JSON.stringify(completion), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),

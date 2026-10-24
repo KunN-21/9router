@@ -1,3 +1,10 @@
+# v0.5.109-local.4 (2026-10-24)
+
+- **Sửa lỗi `Stream ended unexpectedly without terminal event` khi dùng `muse-web` trong combo.** Khi request có `stream: true` **và** `tools[]`, nhưng Hatch trả lời bằng văn xuôi (không sinh file block), code cũ rơi xuống nhánh trả JSON cho một request streaming. Client không nhận được event kết thúc → combo coi là hỏng và nhảy sang model kế tiếp.
+- Gộp về **một** object completion cho cả hai đường, rồi rẽ nhánh theo `stream` ở cuối. Không còn khả năng hai đường lệch nhau về thứ được sinh ra.
+- Kiểm chứng live cả hai nhánh: `stream + tools + không có file block` → SSE có `delta.content`, `finish_reason: stop`, `data: [DONE]`; `stream + tools + có file block` → SSE có `delta.tool_calls`. Trước khi sửa, nhánh đầu trả `application/json` cho client đang chờ SSE.
+- Full suite `5908 pass / 56 fail`, **0 hồi quy**.
+
 # v0.5.109-local.3 (2026-10-24)
 
 - **`muse-web` làm được agentic coding.** Hatch (agent của muse.ai) không có protocol gọi tool phía client: tool của nó chạy trong VM của Meta và nó chỉ *kể lại* là đã gọi. Đo thực tế 3 biến thể prompt — cả 3 đều thất bại, `0` tool call. Nhưng nó **tuân thủ** yêu cầu xuất file dạng block có đánh dấu.
