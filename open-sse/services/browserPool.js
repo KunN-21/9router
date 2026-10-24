@@ -249,6 +249,25 @@ async function launchBrowser(options) {
   }
 }
 
+/**
+ * Everything Playwright needs to scope a captured cookie, honouring the
+ * `__Host-` prefix rule.
+ *
+ * `__Host-` cookies must be set with Secure, Path=/ and NO Domain attribute —
+ * they are host-only by definition. Chromium validates the whole addCookies()
+ * batch, so one such cookie carrying a Domain rejects every cookie in it, which
+ * surfaced as "Invalid cookie fields" on muse.ai's `__Host-hatch_one_tap`.
+ *
+ * Playwright accepts EITHER a `domain`+`path` pair OR a `url`, never a mix, so
+ * host-only cookies get `url` and the callers must not add their own `path`.
+ * Spread the result: `{ name, value, ...cookieScope(name, domain) }`.
+ */
+export function cookieScope(name, domain) {
+  const bare = String(domain).replace(/^\./, "");
+  if (String(name).startsWith("__Host-")) return { url: `https://${bare}` };
+  return { domain: String(domain).startsWith(".") ? domain : `.${domain}`, path: "/" };
+}
+
 function parseCookieString(raw, domain) {
   return raw
     .split(";")
@@ -263,8 +282,10 @@ function parseCookieString(raw, domain) {
       return {
         name,
         value,
-        domain: domain.startsWith(".") ? domain : `.${domain}`,
-        path: "/",
+        ...cookieScope(name, domain),
+        // NOTE: no top-level `path` here — cookieScope owns it, because a
+        // `__Host-` cookie must use `url` scope and Playwright rejects a cookie
+        // that carries both.
         expires: -1,
         httpOnly: false,
         secure: true,

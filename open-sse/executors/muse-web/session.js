@@ -4,7 +4,10 @@
 // without notice. Keep upstream-specific constants in this module so that a
 // site update is a one-file fix.
 
+import { cookieScope } from "../../services/browserPool.js";
+
 const SITE = "https://muse.ai";
+const SITE_DOMAIN = ".muse.ai";
 const NEW_THREAD_URL = `${SITE}/thread/new`;
 const SESSION_API = `${SITE}/api/session`;
 const VM_WAKE_API = `${SITE}/api/hatch/vm/wake`;
@@ -91,8 +94,10 @@ export function toMuseCookies(header) {
   return parseCookiePairs(header).map(({ name, value }) => ({
     name,
     value,
-    domain: ".muse.ai",
-    path: "/",
+    // muse.ai sets `__Host-hatch_one_tap`; a Domain on a `__Host-` cookie makes
+    // Chromium reject the whole batch. cookieScope also owns `path` — a
+    // `__Host-` cookie must use `url` scope, and Playwright rejects both.
+    ...cookieScope(name, SITE_DOMAIN),
     secure: true,
     httpOnly: false,
     sameSite: "Lax",

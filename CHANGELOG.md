@@ -1,3 +1,10 @@
+# v0.5.109-local.2 (2026-10-24)
+
+- **Sửa `muse-web` không dùng được ("Invalid cookie fields")**: cookie `__Host-*` không được phép có attribute `Domain` (RFC 6265bis §4.1.3). muse.ai đặt `__Host-hatch_one_tap`, và `parseCookieString`/`toMuseCookies` gán `domain: ".muse.ai"` cho mọi cookie — Chromium từ chối **toàn bộ batch** `addCookies()`, nên cả 6 cookie đều không được nạp và provider chết ngay ở bước mở context.
+- Thêm helper `hostOnlyScope(name, domain)` trong `open-sse/services/browserPool.js`, dùng ở cả `parseCookieString` (dùng chung cho grok-web / gemini-web / chatgpt-web / deepseek-web / uc-web) và `toMuseCookies` của muse-web. Cookie `__Secure-*` không bị ảnh hưởng vì prefix đó vẫn cho phép `Domain`.
+- Thêm `tests/unit/web-cookie-host-prefix.test.js` (7 test): `__Host-` bỏ Domain, cookie thường giữ Domain, hostname trần được chuẩn hoá thành `.domain`, `__Secure-` không bị coi là host-only.
+- Đã xác nhận trên đúng header cookie thật của tài khoản đang gặp lỗi: 6/6 cookie hợp lệ, 0 vi phạm. **Chưa chạy live trên muse.ai sau khi sửa.**
+
 # v0.5.109-local.1 (2026-10-24)
 
 - Đồng bộ upstream từ v0.5.99 lên v0.5.109 (`f39d8f074`), 226 commit: Muse (Meta Model API) provider với OAuth device-code và transport Responses, SenseNova, web-cookie executors (grok-web qua Chrome-TLS, gemini-web, chatgpt-web), Codex OAuth STT, System One decision models cho Ollama, Smart Router combo, và resolve thinking format theo từng transport.
